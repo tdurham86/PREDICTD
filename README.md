@@ -82,10 +82,15 @@ This repository contains the code to run PREDICTD, a program to model the epigen
     The region host is a string like ```s3-us-west-2.amazonaws.com```, and will depend on the region in which you set up your S3 account.
         
 1. Make sure you have an S3 bucket in which to store the PREDICTD output. You can easily create buckets using the browser-based S3 console.
+
 1. Navigate to the ```/root/predictd``` directory and edit the ```run_demo.sh``` script to point to the name of the bucket to which you would like the output written, as well as the root of the output S3 keys that you would like to use.
+
 1. You are now ready to run the PREDICTD demo. Simply navigate to the ```/root/predictd``` directory and run the following command:
     ```bash
     spark-submit ./run_demo.sh
     ```
     This script will call the ```impute_roadmap_consolidated.py``` PREDICTD script, which will access the Epigenomics Roadmap data in a publicly-accessible S3 bucket and train a model based on the first test split and first validation split from our published experiments. After training the model on the ENCODE Pilot Regions, it will save the model parameters and the imputed and observed data tracks to S3 in the bucket and root key that you specified in the ```run_demo.sh``` script.
+
 1. View the generated tracks in the UCSC Genome Browser by downloading the ```bigwigs/track_lines.txt``` file from the results stored in S3, and then copy those lines into the "Paste URLs or data" box in the "Manage Custom Tracks" -> "Add custom tracks" page on the human genome browser.
+
+1. **Important:** Terminate all running EC2 instances once the model is done training and the tracks are available to avoid being charged for idle machines. All of the model output is saved to S3 and will persist after the virtual machines are terminated.
