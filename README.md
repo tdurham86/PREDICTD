@@ -28,64 +28,64 @@ This repository contains the code to run PREDICTD, a program to model the epigen
     ```
     This will create two new instances in your AWS management console, one called predictd-demo-master and the other called predictd-demo-slave.
 
-1. SSH to the predictd-demo-master machine to configure Spark and run the demo.
-    1. Go to the ```/root/spark/conf``` directory and edit the ```spark-defaults.conf``` file to include the following lines:
-        ```
-        #The number of executors to run on the cluster (usually set to the 
-        #number of available worker node cores divided by the cores per executor,
-        #specified in the spark.executor.cores parameter below.
-        spark.executor.instances 16
-        
-        #The number of cores that should be accessible for each executor. A single executor
-        #can run multiple jobs in parallel, but must exist on a single machine. I have found
-        #that using 4 cores per executor works well.
-        spark.executor.cores 4
-        
-        #The amount of memory available to each executor. Usually works to set this to the
-        #total available worker memory divided by the number of executors, with two GB or so
-        #subtracted to allow some overhead.
-        spark.executor.memory 54g
-        
-        #The number of cores to use on the driver program, which runs on the master node.
-        spark.driver.cores 2
-        
-        #The amount of memory the driver program can use on the master node.
-        spark.driver.memory 12g
-        
-        #Related to the amount of memory available to the driver; I have found it
-        #helpful to keep this value pretty close to the spark.driver.memory value.
-        spark.driver.maxResultSize 10g
-        ```
-        The ```spark-defaults.conf``` file contains parameters describing the allocation of resources and the behavior of the Spark distributed processing engine. The values shown here assume that the cluster contains a ```m4.xlarge``` master node and a single ```x1.16xlarge``` worker node. If you run different instance types or different numbers of instances you may have to adjust these values to fit the new cluster resources.
-    1. Edit the first line of the ```spark-env.sh``` file that sets the ```SPARK_LOCAL_DIRS``` environment variable to read:
-        ```
-        export SPARK_LOCAL_DIRS="/data/spark"
-        ```
-        This is the directory where Spark will write temporary files associated with the jobs that are running. The PREDICTD AMI comes with a 500 GB EBS drive that is mounted under ```/data```, and we recommend that you specify a subdirectory on this drive.
-    1. Last, open the ```log4j.properties.template``` file, and edit the first uncommented line to read:
-        ```
-        log4j.rootCategory=WARN, console
-        ```
-        Then, save the file as ```log4j.properties```. This modification limits the number of messages that get logged to the console and turns on a progress bar that is useful for tracking the progress of jobs that run for more than a second or two.
+#### SSH to the predictd-demo-master machine to configure Spark and run the demo.
+1. Go to the ```/root/spark/conf``` directory and edit the ```spark-defaults.conf``` file to include the following lines:
+    ```
+    #The number of executors to run on the cluster (usually set to the 
+    #number of available worker node cores divided by the cores per executor,
+    #specified in the spark.executor.cores parameter below.
+    spark.executor.instances 16
+    
+    #The number of cores that should be accessible for each executor. A single executor
+    #can run multiple jobs in parallel, but must exist on a single machine. I have found
+    #that using 4 cores per executor works well.
+    spark.executor.cores 4
+    
+    #The amount of memory available to each executor. Usually works to set this to the
+    #total available worker memory divided by the number of executors, with two GB or so
+    #subtracted to allow some overhead.
+    spark.executor.memory 54g
+    
+    #The number of cores to use on the driver program, which runs on the master node.
+    spark.driver.cores 2
+    
+    #The amount of memory the driver program can use on the master node.
+    spark.driver.memory 12g
+    
+    #Related to the amount of memory available to the driver; I have found it
+    #helpful to keep this value pretty close to the spark.driver.memory value.
+    spark.driver.maxResultSize 10g
+    ```
+    The ```spark-defaults.conf``` file contains parameters describing the allocation of resources and the behavior of the Spark distributed processing engine. The values shown here assume that the cluster contains a ```m4.xlarge``` master node and a single ```x1.16xlarge``` worker node. If you run different instance types or different numbers of instances you may have to adjust these values to fit the new cluster resources.
+1. Edit the first line of the ```spark-env.sh``` file that sets the ```SPARK_LOCAL_DIRS``` environment variable to read:
+    ```
+    export SPARK_LOCAL_DIRS="/data/spark"
+    ```
+    This is the directory where Spark will write temporary files associated with the jobs that are running. The PREDICTD AMI comes with a 500 GB EBS drive that is mounted under ```/data```, and we recommend that you specify a subdirectory on this drive.
+1. Last, open the ```log4j.properties.template``` file, and edit the first uncommented line to read:
+    ```
+    log4j.rootCategory=WARN, console
+    ```
+    Then, save the file as ```log4j.properties```. This modification limits the number of messages that get logged to the console and turns on a progress bar that is useful for tracking the progress of jobs that run for more than a second or two.
 
-    1. Set your S3 access key information as environment variables in the same way that you did when setting up the cluster.
-        ```bash
-        export AWS_ACCESS_KEY_ID=<AWS_ACCESS>
-        export AWS_SECRET_ACCESS_KEY=<AWS_SECRET> 
-        ```
-    1. The PREDICTD code is stored in the ```/root/predictd``` directory. Go there and create a file called ```s3_credentials.txt``` to store your S3 access credentials for PREDICTD to read in. The file contents should look something like this:
-        ```
-        aws_access_key_id=<AWS_ACCESS_KEY_ID_HERE>
-        aws_secret_access_key=<AWS_SECRET_ACCESS_KEY_HERE>
-        host=<S3_REGION_HOST_HERE>
-        ```
-        The region host is a string like ```s3-us-west-2.amazonaws.com```, and will depend on the region in which you set up your S3 account.
+1. Set your S3 access key information as environment variables in the same way that you did when setting up the cluster.
+    ```bash
+    export AWS_ACCESS_KEY_ID=<AWS_ACCESS>
+    export AWS_SECRET_ACCESS_KEY=<AWS_SECRET> 
+    ```
+1. The PREDICTD code is stored in the ```/root/predictd``` directory. Go there and create a file called ```s3_credentials.txt``` to store your S3 access credentials for PREDICTD to read in. The file contents should look something like this:
+    ```
+    aws_access_key_id=<AWS_ACCESS_KEY_ID_HERE>
+    aws_secret_access_key=<AWS_SECRET_ACCESS_KEY_HERE>
+    host=<S3_REGION_HOST_HERE>
+    ```
+    The region host is a string like ```s3-us-west-2.amazonaws.com```, and will depend on the region in which you set up your S3 account.
         
-    1. Make sure you have an S3 bucket in which to store the PREDICTD output. You can easily create buckets using the browser-based S3 console.
-    1. Navigate to the ```/root/predictd``` directory and edit the ```run_demo.sh``` script to point to the name of the bucket to which you would like the output written, as well as the root of the output S3 keys that you would like to use.
-    1. You are now ready to run the PREDICTD demo. Simply navigate to the ```/root/predictd``` directory and run the following command:
-        ```bash
-        spark-submit ./run_demo.sh
-        ```
-        This script will call the ```impute_roadmap_consolidated.py``` PREDICTD script, which will access the Epigenomics Roadmap data in a publicly-accessible S3 bucket and train a model based on the first test split and first validation split from our published experiments. After training the model on the ENCODE Pilot Regions, it will save the model parameters and the imputed and observed data tracks to S3 in the bucket and root key that you specified in the ```run_demo.sh``` script.
-    1. View the generated tracks in the UCSC Genome Browser by downloading the ```bigwigs/track_lines.txt``` file from the results stored in S3, and then copy those lines into the "Paste URLs or data" box in the "Manage Custom Tracks" -> "Add custom tracks" page on the human genome browser.
+1. Make sure you have an S3 bucket in which to store the PREDICTD output. You can easily create buckets using the browser-based S3 console.
+1. Navigate to the ```/root/predictd``` directory and edit the ```run_demo.sh``` script to point to the name of the bucket to which you would like the output written, as well as the root of the output S3 keys that you would like to use.
+1. You are now ready to run the PREDICTD demo. Simply navigate to the ```/root/predictd``` directory and run the following command:
+    ```bash
+    spark-submit ./run_demo.sh
+    ```
+    This script will call the ```impute_roadmap_consolidated.py``` PREDICTD script, which will access the Epigenomics Roadmap data in a publicly-accessible S3 bucket and train a model based on the first test split and first validation split from our published experiments. After training the model on the ENCODE Pilot Regions, it will save the model parameters and the imputed and observed data tracks to S3 in the bucket and root key that you specified in the ```run_demo.sh``` script.
+1. View the generated tracks in the UCSC Genome Browser by downloading the ```bigwigs/track_lines.txt``` file from the results stored in S3, and then copy those lines into the "Paste URLs or data" box in the "Manage Custom Tracks" -> "Add custom tracks" page on the human genome browser.
