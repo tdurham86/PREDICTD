@@ -7,7 +7,7 @@ This repository contains the code to run PREDICTD, a program to model the epigen
 
 #### Set up Amazon Web Services accounts
 
-1. Ensure that you have an account for Amazon Web Services. Set up a Simple Storage Service (S3) bucket in the US West (Oregon) region, and record the access key, and secret access key (for how to find the access key information, look [here](http://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys) for a bit later.
+1. Ensure that you have an account for Amazon Web Services. Set up a Simple Storage Service (S3) bucket in the US West (Oregon) region, and record the access key, and secret access key for later (for how to find the access key information, look [here](http://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys).
 
 #### Start a cluster with ```spark-ec2```
 
