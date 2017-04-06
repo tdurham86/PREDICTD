@@ -94,10 +94,12 @@ This repository contains the code to run PREDICTD, a program to model the epigen
     ```
     When it asks for a region, put ```us-west-2```, and when it asks for a default output format just leave that blank.
 
-1. Now, to propagate these configuration changes throughout the cluster run the following commands:
+1. Now, to propagate these configuration changes throughout the cluster run the following commands in order:
     ```bash
+    /root/spark/sbin/stop-all.sh
     /root/spark-ec2/copy-dir /root/.aws
     /root/spark-ec2/copy-dir /root/spark/conf
+    /root/spark/sbin/start-all.sh
     ```
 
 1. Make sure you have an S3 bucket in which to store the PREDICTD output. You can easily create buckets using the browser-based S3 console.
