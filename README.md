@@ -34,7 +34,7 @@ This repository contains the code to run PREDICTD, a program to model the epigen
 1. Now, start up the cluster with a command line like the following. We recommend using a ```m4.xlarge``` instance for the head node, and a ```x1.16xlarge``` instance for the worker node. Always use spot instances for the workers, as this can save up to 90% on the cost of the workers.
 
     ```bash
-    /home/ec2-user/spark-1.6.0/ec2/spark-ec2 --key-pair=<EC2_keypair_name> --identity-file=/root/.ssh/<EC2_key.pem> --region=us-west-2 --ami=<PREDICTD_AMI> --master-instance-type=m4.xlarge --instance-type=x1.16xlarge --spot-price=2.00 --slaves=1 --spark-version=1.6.0 --hadoop-major-version=yarn --copy-aws-credentials --ganglia launch predictd-demo
+    /root/spark-ec2/spark-ec2 --key-pair=<EC2_keypair_name> --identity-file=/root/.ssh/<EC2_key.pem> --region=us-west-2 --ami=<PREDICTD_AMI> --master-instance-type=m4.xlarge --instance-type=x1.16xlarge --spot-price=2.00 --slaves=1 --spark-version=1.6.0 --hadoop-major-version=yarn --copy-aws-credentials --ganglia launch predictd-demo
     ```
 
     When it asks whether to reformat HDFS, say "yes". There are additional options for configuring the way the cluster is set up. See the [spark-ec2 documentation](https://github.com/amplab/spark-ec2) for more info on the options. This will create two new instances in your AWS management console, one called predictd-demo-master (the head node of the cluster) and the other called predictd-demo-slave (the worker node of the cluster).
