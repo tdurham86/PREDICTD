@@ -2270,6 +2270,8 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
     else:
         imputed_tensor = numpy.array(imputed_tensor)
     if data_tensor is not None:
+        for elt in data_tensor:
+            elt.data += gmean
         data_tensor = numpy.array([elt.toarray() for elt in data_tensor])
     imputed_tensor[numpy.where(imputed_tensor < 0)] = 0
     if sinh is True:
