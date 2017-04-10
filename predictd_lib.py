@@ -2251,7 +2251,7 @@ def train_predictd_ct_genome(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias
         all_iters_count += 1
     return min_factors['gtotal'], min_factors['ct'], min_factors['ct_bias'], min_factors['assay'], min_factors['assay_bias'], iter_errs
 
-def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=25, sinh=True, coords=None):
+def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=25, sinh=True, coords=None, tmpdir='/data/tmp'):
     rdd_part = list(rdd_part)
     #if this is already an imputed rdd, then no need to call compute_imputed
     if ct is None:
@@ -2357,7 +2357,7 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
         bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0s}}_{{1!s}}.{!s}.{{2!s}}.txt'.format(extra_id))
     if coords is None:
         coords = list(zip(*itertools.product(numpy.arange(len(ct_list)), numpy.arange(len(assay_list)))))
-    sorted_w_idx = gtotal.map(lambda x: (x[0],x)).sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords)).count()
+    sorted_w_idx = gtotal.map(lambda x: (x[0],x)).sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords, tmpdir=tmpdir)).count()
 
     bdg_coord_glob = os.path.join(tmpdir, 'bdg_coords.*.txt')
     sc.parallelize([bdg_coord_glob], numSlices=1).foreach(_combine_bdg_coords)
