@@ -7,11 +7,12 @@ import os
 import pickle
 from tempfile import NamedTemporaryFile
 
-#with open(os.path.join(os.path.dirname(__file__), 's3_credentials.txt')) as creds:
-with open('/home/ec2-user/code_parallel_stochastic/predictd/s3_credentials.txt') as creds:
-    cred_info = dict([elt.strip().split('=') for elt in creds])
-#print(cred_info)
-S3 = boto.connect_s3(**cred_info)
+##with open(os.path.join(os.path.dirname(__file__), 's3_credentials.txt')) as creds:
+#with open('/home/ec2-user/code_parallel_stochastic/predictd/s3_credentials.txt') as creds:
+#    cred_info = dict([elt.strip().split('=') for elt in creds])
+##print(cred_info)
+#S3 = boto.connect_s3(**cred_info)
+S3 = boto.connect_s3()
 TMPDIR='/data/tmp'
 
 def parse_s3_url(s3_url):
