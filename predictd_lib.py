@@ -519,11 +519,14 @@ def compute_imputed(gtotal, ct, ct_bias, assay, assay_bias, gmean, coords=None):
     else:
         return (gidx, numpy.sum([numpy.outer(ct[:, idx], assay[:, idx]) * genome[idx] for idx in range(len(genome))], axis=0) + genome_bias + ct_bias[:,None] + assay_bias)
 
-def _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords):
+def _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords=None):
     gidx, data, genome, genome_bias = x[:4]
     imp_vals = (numpy.dot(ct_assay.T, genome[:,None]).flatten() + ct_assay_bias + genome_bias + gmean).reshape(data.shape)
-    imp_sparse = sps.csr_matrix((imp_vals[coords], coords), shape=imp_vals.shape)
-    return gidx, imp_sparse
+    if coords is None:
+        return gidx, imp_vals
+    else:
+        imp_sparse = sps.csr_matrix((imp_vals[coords], coords), shape=imp_vals.shape)
+        return gidx, imp_sparse
 
 def compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=None):
     if coords is None:
@@ -2339,9 +2342,12 @@ def _combine_bdg_coords(bdg_coord_glob):
 
 def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean, 
                    ct_list, assay_list, out_bucket, out_root, winsize=25, 
-                   sinh=True, make_public=True, tmpdir='/data/tmp', coords=None):
+                   sinh=True, make_public=True, tmpdir='/data/tmp', coords=None, extra_id=None):
     out_root = os.path.join(out_root, 'bigwigs')
-    bdg_path = os.path.join(tmpdir, '{!s}_{!s}.{!s}.txt')
+    if extra_id is None:
+        bdg_path = os.path.join(tmpdir, '{!s}_{!s}.{!s}.txt')
+    else:
+        bdg_path = os.path.join(tmpdir, '{{!s}}_{{!s}}.{!s}.{{!s}}.txt'.format(extra_id))
     if coords is None:
         coords = list(zip(*itertools.product(numpy.arange(len(ct_list)), numpy.arange(len(assay_list)))))
     sorted_w_idx = gtotal.map(lambda x: (x[0],x)).sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords)).count()
