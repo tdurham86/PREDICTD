@@ -39,8 +39,10 @@ def read_in_part(part_url, data_shape, col_coords):
                                   line_to_data(line[-1], data_shape, col_coords)))
             except NoDataException:
                 pass
-#            except ValCountException as err:
-#                raise Exception((part_url,) + err.args)
+#            if len(part_data) == int(1e5):
+#                break
+##            except ValCountException as err:
+##                raise Exception((part_url,) + err.args)
     return part_data
 
 if __name__ == "__main__":

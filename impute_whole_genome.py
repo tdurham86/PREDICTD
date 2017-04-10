@@ -1,21 +1,23 @@
 
+import itertools
 import numpy
 import os
 from pyspark import SparkContext
+import smart_open
 
 import s3_library
 import predictd_lib as pl
 import assembled_data_to_rdd as adtr
 
 def avg_impute(gtotal_elt, second_order_params, folds, data_coords):
-    genome_params = [(tidx, pl.second_order_genome_updates(gtotal_elt, folds[tidx]['train'][vidx]['train'], z_mat, z_h, ac_bias)[-2:]) for (tidx, vidx), (z_mat, z_h, ac_bias, ct_assay, ct_assay_bias, gmean) in second_order_params]
+    genome_params = [(tidx, pl.second_order_genome_updates(gtotal_elt, numpy.where(~folds[tidx]['train'][vidx]['train'].flatten()), z_mat, z_h, ac_bias)[-2:]) for (tidx, vidx), (z_mat, z_h, ac_bias, ct_assay, ct_assay_bias, gmean) in second_order_params]
     final_impute = numpy.zeros(gtotal_elt[1].shape)
     impute_sum = final_impute.copy()
-    for tidx, elt in enumerate([elt['test'] for elt in folds]):
-        imputed = [pl._compute_imputed2_helper(gtotal_elt[:2] + elt[1:], second_order_params[idx][-3], second_order_params[idx][-2], second_order_params[idx][-1])[-1] for idx, elt in enumerate(genome_params) if elt[0] == tidx]
+    for tidx, test_fold in enumerate([elt['test'] for elt in folds]):
+        imputed = [pl._compute_imputed2_helper(gtotal_elt[:2] + elt[1], second_order_params[idx][1][-3], second_order_params[idx][1][-2], second_order_params[idx][1][-1])[-1] for idx, elt in enumerate(genome_params) if elt[0] == tidx]
         imputed_sum = numpy.sum(imputed, axis=0)
         impute_sum += imputed_sum
-        test_coords = numpy.where(~elt)
+        test_coords = numpy.where(~test_fold)
         final_impute[test_coords] = imputed_sum[test_coords]/len(imputed)
     final_impute[~data_coords] = impute_sum[~data_coords]/len(genome_params)
     return (gtotal_elt[0], final_impute)
@@ -39,12 +41,16 @@ def prep_ctassays(ct_params_path, train_subset, ri=2.9):
     return (z_mat, z_h, ac_bias, ct_assay, ct_assay_bias, gmean)
 
 #read in metadata and locations of data files
+print('Loading Data')
 data_idx = s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/data_idx.pickle')
-parts_idx_map = s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/alldata.data_idx_coord_to_alldata_coord_map.pickle')
+parts_idx = s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/alldata.column_coords.pickle')
+parts_idx_map = {v:k for k,v in s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/alldata.data_idx_coord_to_alldata_coord_map.pickle').items()}
+parts_idx = list(zip(*[parts_idx_map[elt] for elt in parts_idx]))
 all_parts = sorted(['s3://encodeimputation-alldata/{!s}'.format(elt.name) for elt in s3_library.glob_keys('encodeimputation-alldata', '25bp/alldata-parts/alldata.part*.txt.gz')], key=lambda x: int(os.path.basename(x).split('.')[1][4:]))
 data_shape = (127, 24)
 
 #read in models to use
+print('Loading Models')
 folds = s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/folds.5.8.pickle')
 data_coords = numpy.zeros(data_shape, dtype=bool)
 for elt in folds:
@@ -65,14 +71,33 @@ pl.sc = sc
 adtr.pl = pl
 
 #impute data for all models and average
+print('Imputing and generating bedgraphs')
 assay_list = [e2[0] for e2 in sorted(set([(e1[1], e1[-1][1]) for e1 in data_idx.values()]), key=lambda x: x[1])]
 ct_list = [e2[0] for e2 in sorted(set([(e1[0], e1[-1][0]) for e1 in data_idx.values()]), key=lambda x: x[1])]
-for idx in xrange(0, len(all_parts), 2):
-    imputed_part = sc.parallelize(all_parts[idx:idx+2], numSlices=2).flatMap(lambda x: adtr.read_in_part(x, data_shape, col_coords)).repartition(500).map(lambda (x,y): avg_impute((x,y,None,None), second_order_params, folds, data_coords)).persist()
+tmpdir = '/data/tmp'
+for idx in xrange(0, len(all_parts), 3):
+    imputed_part = sc.parallelize(all_parts[idx:idx+3], numSlices=3).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(500).map(lambda (x,y): avg_impute((x,y,None,None), second_order_params, folds, data_coords)).persist()
     imputed_part.count()
     
-    tmpdir = '/data/tmp'
     bdg_path = os.path.join(tmpdir, '{{!s}}_{{!s}}.{!s}.{{!s}}.txt'.format(idx))
-    sorted_w_idx = imputed_part.sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: pl._construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, None, None, None, None, None, winsize=25, sinh=False, coords=None)).count()
-    break
+    sorted_w_idx = imputed_part.repartition(120).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, None, None, None, None, None, winsize=25, sinh=False, coords=None)).count()
+    imputed_part.unpersist()
+    del(imputed_part)
+
+print('Generating bigwig')
+bdg_coord_glob = os.path.join(tmpdir, 'bdg_coords.*.txt')
+sc.parallelize([bdg_coord_glob], numSlices=1).foreach(pl._combine_bdg_coords)
+
+
+out_bucket = 'encodeimputation-alldata'
+out_root='predictd_demo/all-imputed'
+#coords_to_output = list(zip(*itertools.product((ct_list.index('H1_Cell_Line'),), numpy.arange(len(assay_list)))))
+coords_to_output = list(zip(*itertools.product(numpy.arange(len(ct_list)), numpy.arange(len(assay_list)))))
+ct_assay_list = [(ct_list[c], assay_list[a]) for c, a in zip(*coords_to_output)]
+track_lines = sc.parallelize(ct_assay_list, numSlices=len(ct_assay_list)/2).mapPartitions(lambda x: pl._compile_bdg_and_upload(x, out_bucket, out_root, bdg_path, tmpdir=tmpdir)).collect()
+
+out_url = 's3://{!s}/{!s}'.format(out_bucket, os.path.join(out_root, 'track_lines.txt'))
+with smart_open.smart_open(out_url, 'w') as out:
+    out.write('\n'.join(track_lines))
+    
 sc.stop()

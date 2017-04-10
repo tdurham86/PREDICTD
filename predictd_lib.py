@@ -2255,6 +2255,7 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
     rdd_part = list(rdd_part)
     #if this is already an imputed rdd, then no need to call compute_imputed
     if ct is None:
+#        raise Exception(rdd_part[0], len(rdd_part), len(rdd_part[0]))
         gidx, imputed_tensor = list(zip(*rdd_part))
         data_tensor = None
     #otherwise, use the factor matrices to generate the imputation
@@ -2264,7 +2265,7 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
     #save bedgraph coords to join with cell type/assay data
     bdg_coords = numpy.array(gidx, dtype=object)
     bdg_coords = numpy.hstack([bdg_coords, bdg_coords[:,1][:,None] + winsize])
-    coords_path = os.path.join(os.path.dirname(bdg_path), 'bdg_coords.{:05d}.txt'.format(part_idx))
+    coords_path = os.path.join(tmpdir, 'bdg_coords.{:05d}.txt'.format(part_idx))
     numpy.savetxt(coords_path, bdg_coords, delimiter='\t', fmt=['%s', '%i', '%i'])
 
     #save cell type/assay data
@@ -2288,14 +2289,20 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
     for ct_idx, assay_idx in coords:
         ct_name = ct_list[ct_idx]
         assay_name = assay_list[assay_idx]
-        numpy.savetxt(bdg_path.format(ct_name, assay_name, '{:05d}.imp'.format(part_idx)), imputed_tensor[:, ct_idx, assay_idx], delimiter='\t', fmt='%.8e')
+        impsave = bdg_path.format(ct_name, assay_name, '{:05d}.imp'.format(part_idx))
+        try:
+            os.makedirs(os.path.dirname(impsave))
+        except:
+            pass
+        numpy.savetxt(impsave, imputed_tensor[:, ct_idx, assay_idx], delimiter='\t', fmt='%.8e')
         if data_tensor is not None:
-            numpy.savetxt(bdg_path.format(ct_name, assay_name, '{:05d}.obs'.format(part_idx)), data_tensor[:, ct_idx, assay_idx], delimiter='\t', fmt='%.8e')
+            obssave = bdg_path.format(ct_name, assay_name, '{:05d}.obs'.format(part_idx))
+            numpy.savetxt(obssave, data_tensor[:, ct_idx, assay_idx], delimiter='\t', fmt='%.8e')
     yield part_idx
 
 def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_public=True, tmpdir='/data/tmp'):
-    chrom_sizes_path = os.path.join(os.path.dirname(bdg_path), 'hg19.chrom.sizes')
-    chrom_bed_path = os.path.join(os.path.dirname(bdg_path), 'hg19.chrom.bed')
+    chrom_sizes_path = os.path.join(tmpdir, 'hg19.chrom.sizes')
+    chrom_bed_path = os.path.join(tmpdir, 'hg19.chrom.bed')
     while not os.path.exists(chrom_sizes_path):
         try:
             os.makedirs(chrom_sizes_path+'.lock')
@@ -2314,7 +2321,7 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
             if not bdg_paths:
                 continue
             unixcat, unixpaste, bedtools = local['cat'], local['paste'], local['bedtools']
-            chain = unixcat[bdg_paths] | unixpaste[os.path.join(os.path.dirname(bdg_glob), 'bdg_coords.txt'), '-'] | bedtools['intersect', '-wa', '-a', 'stdin', '-b', chrom_bed_path, '-f', '1.0'] > out_bdg
+            chain = unixcat[bdg_paths] | unixpaste[os.path.join(tmpdir, 'bdg_coords.txt'), '-'] | bedtools['intersect', '-wa', '-a', 'stdin', '-b', chrom_bed_path, '-f', '1.0'] > out_bdg
             chain()
             
             out_bw = os.path.splitext(out_bdg)[0] + '.bw'
@@ -2345,9 +2352,9 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
                    sinh=True, make_public=True, tmpdir='/data/tmp', coords=None, extra_id=None):
     out_root = os.path.join(out_root, 'bigwigs')
     if extra_id is None:
-        bdg_path = os.path.join(tmpdir, '{!s}_{!s}.{!s}.txt')
+        bdg_path = os.path.join(tmpdir, '{0!s}_{1!s}/{0!s}_{1!s}.{2!s}.txt')
     else:
-        bdg_path = os.path.join(tmpdir, '{{!s}}_{{!s}}.{!s}.{{!s}}.txt'.format(extra_id))
+        bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0s}}_{{1!s}}.{!s}.{{2!s}}.txt'.format(extra_id))
     if coords is None:
         coords = list(zip(*itertools.product(numpy.arange(len(ct_list)), numpy.arange(len(assay_list)))))
     sorted_w_idx = gtotal.map(lambda x: (x[0],x)).sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords)).count()
