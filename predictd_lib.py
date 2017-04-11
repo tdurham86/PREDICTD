@@ -2290,6 +2290,7 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
         ct_name = ct_list[ct_idx]
         assay_name = assay_list[assay_idx]
         impsave = bdg_path.format(ct_name, assay_name, '{:05d}.imp'.format(part_idx))
+        print(impsave)
         try:
             os.makedirs(os.path.dirname(impsave))
         except:

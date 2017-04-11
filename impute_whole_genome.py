@@ -74,15 +74,16 @@ adtr.pl = pl
 print('Imputing and generating bedgraphs')
 assay_list = [e2[0] for e2 in sorted(set([(e1[1], e1[-1][1]) for e1 in data_idx.values()]), key=lambda x: x[1])]
 ct_list = [e2[0] for e2 in sorted(set([(e1[0], e1[-1][0]) for e1 in data_idx.values()]), key=lambda x: x[1])]
-tmpdir = '/data/tmp'
-for idx in xrange(0, len(all_parts), 3):
+tmpdir = '/data2/tmp'
+for idx in xrange(0, len(all_parts), 8):
     imputed_part = sc.parallelize(all_parts[idx:idx+3], numSlices=3).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(500).map(lambda (x,y): avg_impute((x,y,None,None), second_order_params, folds, data_coords)).persist()
     imputed_part.count()
     
-    bdg_path = os.path.join(tmpdir, '{{!s}}_{{!s}}.{!s}.{{!s}}.txt'.format(idx))
+    bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0!s}}_{{1!s}}.{!s}.{{2!s}}.txt'.format(idx))
     sorted_w_idx = imputed_part.repartition(120).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, None, None, None, None, None, winsize=25, sinh=False, coords=None)).count()
     imputed_part.unpersist()
     del(imputed_part)
+#    break
 
 print('Generating bigwig')
 bdg_coord_glob = os.path.join(tmpdir, 'bdg_coords.*.txt')
