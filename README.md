@@ -11,7 +11,7 @@ This repository contains the code to run PREDICTD, a program to model the epigen
 
 #### Start a cluster with ```spark-ec2```
 
-1. Use the AWS Management Console to make a small AWS instance to use for starting the cluster. Create a small Elastic Compute Cloud (EC2) instance like m3.medium (using a spot instance will make it cheaper). Search for and select the PREDICTD Amazon Machine Image (AMI) when you have the option.
+1. Use the AWS Management Console to make a small AWS instance to use for starting the cluster. Create a small Elastic Compute Cloud (EC2) instance like m3.medium (using a spot instance will make it cheaper). Search for and select the PREDICTD Amazon Machine Image (AMI, id=ami-067eee66) when you have the option.
 
 1. Once the instance is ready, ssh to it using its public DNS address (available on the EC2 browser console). The command on linux should look like 
     ```bash
