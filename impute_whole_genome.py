@@ -2,7 +2,7 @@
 import itertools
 import numpy
 import os
-from pyspark import SparkContext
+from pyspark import SparkContext, StorageLevel
 import smart_open
 
 import s3_library
@@ -56,11 +56,39 @@ data_coords = numpy.zeros(data_shape, dtype=bool)
 for elt in folds:
     data_coords = numpy.logical_or(data_coords, ~elt['test'])
 ct_param_paths = sorted([elt.name for elt in s3_library.glob_keys('encodeimputation2', 'NADAM-25bp/imputed_for_paper/test_fold*/valid_fold*/3D_model_ct_params.pickle')])
+print(len(ct_param_paths))
 second_order_params = []
 for path in ct_param_paths:
     test_idx = int(os.path.dirname(os.path.dirname(path))[-1])
     valid_idx = int(os.path.dirname(path)[-1])
     second_order_params.append(((test_idx, valid_idx), prep_ctassays(path, folds[test_idx]['train'][valid_idx]['train'])))
+
+#impute data for all models and average
+print('Imputing and generating bedgraphs')
+assay_list = [e2[0] for e2 in sorted(set([(e1[1], e1[-1][1]) for e1 in data_idx.values()]), key=lambda x: x[1])]
+ct_list = [e2[0] for e2 in sorted(set([(e1[0], e1[-1][0]) for e1 in data_idx.values()]), key=lambda x: x[1])]
+tmpdir = '/data2/tmp'
+parts_at_once = 6
+for idx in xrange(0, len(all_parts), parts_at_once):
+    #start SparkContext
+    sc = SparkContext(appName='impute_whole_genome',
+                      pyFiles=[s3_library.__file__.replace('.pyc', '.py'),
+                               pl.__file__.replace('.pyc', '.py'),
+                               adtr.__file__.replace('.pyc', '.py')])
+    pl.sc = sc
+    adtr.pl = pl
+
+    bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0!s}}_{{1!s}}.{:05d}.{{2!s}}.txt'.format(idx))
+    if idx >= 120:
+        imputed_part = sc.parallelize(all_parts[idx:idx+parts_at_once], numSlices=parts_at_once).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(500).map(lambda (x,y): avg_impute((x,y,None,None), second_order_params, folds, data_coords)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        imputed_part.count()
+
+        sorted_w_idx = imputed_part.repartition(200).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, None, None, None, None, None, winsize=25, sinh=False, coords=None, tmpdir=tmpdir)).count()
+        imputed_part.unpersist()
+        del(imputed_part)
+    else:
+        sorted_w_idx = sc.parallelize(all_parts[idx:idx+parts_at_once], numSlices=parts_at_once).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(200).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._just_write_bdg_coords(x, y, bdg_path, winsize=25, tmpdir=tmpdir)).count()
+    sc.stop()
 
 #start SparkContext
 sc = SparkContext(appName='impute_whole_genome',
@@ -70,26 +98,11 @@ sc = SparkContext(appName='impute_whole_genome',
 pl.sc = sc
 adtr.pl = pl
 
-#impute data for all models and average
-print('Imputing and generating bedgraphs')
-assay_list = [e2[0] for e2 in sorted(set([(e1[1], e1[-1][1]) for e1 in data_idx.values()]), key=lambda x: x[1])]
-ct_list = [e2[0] for e2 in sorted(set([(e1[0], e1[-1][0]) for e1 in data_idx.values()]), key=lambda x: x[1])]
-tmpdir = '/data2/tmp'
-for idx in xrange(0, len(all_parts), 8):
-    imputed_part = sc.parallelize(all_parts[idx:idx+3], numSlices=3).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(500).map(lambda (x,y): avg_impute((x,y,None,None), second_order_params, folds, data_coords)).persist()
-    imputed_part.count()
-    
-    bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0!s}}_{{1!s}}.{!s}.{{2!s}}.txt'.format(idx))
-    sorted_w_idx = imputed_part.repartition(120).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, None, None, None, None, None, winsize=25, sinh=False, coords=None)).count()
-    imputed_part.unpersist()
-    del(imputed_part)
-#    break
-
 print('Generating bigwig')
 bdg_coord_glob = os.path.join(tmpdir, 'bdg_coords.*.txt')
 sc.parallelize([bdg_coord_glob], numSlices=1).foreach(pl._combine_bdg_coords)
 
-
+bdg_path = os.path.join(tmpdir, '{0!s}_{1!s}/{0!s}_{1!s}.*.{2!s}.txt')
 out_bucket = 'encodeimputation-alldata'
 out_root='predictd_demo/all-imputed'
 #coords_to_output = list(zip(*itertools.product((ct_list.index('H1_Cell_Line'),), numpy.arange(len(assay_list)))))

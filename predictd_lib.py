@@ -2251,6 +2251,16 @@ def train_predictd_ct_genome(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias
         all_iters_count += 1
     return min_factors['gtotal'], min_factors['ct'], min_factors['ct_bias'], min_factors['assay'], min_factors['assay_bias'], iter_errs
 
+def _just_write_bdg_coords(part_idx, rdd_part, bdg_path, winsize=25, tmpdir='/data/tmp'):
+    rdd_part = list(rdd_part)
+    gidx = [elt[0] for elt in rdd_part]
+    #save bedgraph coords to join with cell type/assay data
+    bdg_coords = numpy.array(gidx, dtype=object)
+    bdg_coords = numpy.hstack([bdg_coords, bdg_coords[:,1][:,None] + winsize])
+    coords_path = os.path.join(tmpdir, os.path.basename(bdg_path.format('bdg', 'coords', '{:05d}'.format(part_idx))))
+    numpy.savetxt(coords_path, bdg_coords, delimiter='\t', fmt=['%s', '%i', '%i'])
+    yield part_idx
+
 def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=25, sinh=True, coords=None, tmpdir='/data/tmp'):
     rdd_part = list(rdd_part)
     #if this is already an imputed rdd, then no need to call compute_imputed
@@ -2265,7 +2275,7 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
     #save bedgraph coords to join with cell type/assay data
     bdg_coords = numpy.array(gidx, dtype=object)
     bdg_coords = numpy.hstack([bdg_coords, bdg_coords[:,1][:,None] + winsize])
-    coords_path = os.path.join(tmpdir, 'bdg_coords.{:05d}.txt'.format(part_idx))
+    coords_path = os.path.join(tmpdir, os.path.basename(bdg_path.format('bdg', 'coords', '{:05d}'.format(part_idx))))
     numpy.savetxt(coords_path, bdg_coords, delimiter='\t', fmt=['%s', '%i', '%i'])
 
     #save cell type/assay data
@@ -2316,7 +2326,7 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
             os.rmdir(chrom_sizes_path+'.lock')
     for ct_name, assay_name in ctassay_part:
         for bdg_type in ['imp', 'obs']:
-            out_bdg = os.path.join(tmpdir, os.path.basename(bdg_path.format(ct_name, assay_name, bdg_type)))
+            out_bdg = os.path.join(tmpdir, os.path.basename(bdg_path.format(ct_name, assay_name, bdg_type)).replace('.*', ''))
             bdg_glob = bdg_path.format(ct_name, assay_name, '*.{!s}'.format(bdg_type))
             bdg_paths = sorted(glob.glob(bdg_glob))
             if not bdg_paths:
@@ -2355,7 +2365,7 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
     if extra_id is None:
         bdg_path = os.path.join(tmpdir, '{0!s}_{1!s}/{0!s}_{1!s}.{2!s}.txt')
     else:
-        bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0s}}_{{1!s}}.{!s}.{{2!s}}.txt'.format(extra_id))
+        bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0s}}_{{1!s}}.{:05d}.{{2!s}}.txt'.format(extra_id))
     if coords is None:
         coords = list(zip(*itertools.product(numpy.arange(len(ct_list)), numpy.arange(len(assay_list)))))
     sorted_w_idx = gtotal.map(lambda x: (x[0],x)).sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords, tmpdir=tmpdir)).count()
@@ -2363,6 +2373,8 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
     bdg_coord_glob = os.path.join(tmpdir, 'bdg_coords.*.txt')
     sc.parallelize([bdg_coord_glob], numSlices=1).foreach(_combine_bdg_coords)
 
+    if extra_id is not None:
+        bdg_path = os.path.join(tmpdir, '{0!s}_{1!s}/{0!s}_{1!s}.*.{2!s}.txt')
     ct_assay_list = [(ct_list[c], assay_list[a]) for c, a in zip(*coords)]
     track_lines = sc.parallelize(ct_assay_list, numSlices=len(ct_assay_list)/2).mapPartitions(lambda x: _compile_bdg_and_upload(x, out_bucket, out_root, bdg_path, tmpdir=tmpdir)).collect()
     out_url = 's3://{!s}/{!s}'.format(out_bucket, os.path.join(out_root, 'track_lines.txt'))
