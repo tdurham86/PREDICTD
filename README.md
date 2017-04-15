@@ -1,7 +1,7 @@
 # PREDICTD
 Durham T, Libbrecht M, Howbert J, Bilmes J, Noble W. PaRallel Epigenomics Data Imputation with Cloud-based Tensor Decomposition. 2017. https://doi.org/10.1101/123927.
 
-This repository contains the code to run PREDICTD, a program to model the epigenome based on the Encyclopedia of DNA Elements and the NIH Roadmap Epigenomics Project data and to impute the results of epigenomics experiments that have not yet been done. A computing environment for running this code is distributed as an Amazon Machine Image, and it is easiest to get the code up and running by following the steps in the tutorial below to start a cluster in Amazon Web Services.
+This repository contains the code to run PREDICTD, a program to model the epigenome based on the Encyclopedia of DNA Elements and the NIH Roadmap Epigenomics Project data and to impute the results of epigenomics experiments that have not yet been done. A computing environment for running this code is distributed as an Amazon Machine Image, and it is easiest to get the code up and running by following the steps in the tutorial below to start a cluster in Amazon Web Services. This tutorial will demonstrate how to train the model on the Roadmap Consolidated data set used in the paper. The model can also be used to impute data for a new cell type, and there will be another tutorial for that use case coming soon. If you do not want to run the model, but simply want to get the imputed data from the paper, you will be able to download that data in bigwig format from the ENCODE project website soon.
 
 ## Demo Tutorial
 
@@ -11,7 +11,7 @@ This repository contains the code to run PREDICTD, a program to model the epigen
 
 #### Start a cluster with ```spark-ec2```
 
-1. Use the AWS Management Console to make a small AWS instance to use for starting the cluster. Create a small Elastic Compute Cloud (EC2) instance like m3.medium (using a spot instance will make it cheaper). Search for and select the PREDICTD Amazon Machine Image (AMI, id=ami-067eee66) when you have the option.
+1. Use the AWS Management Console to make a small AWS instance to use for starting the cluster. Create a small Elastic Compute Cloud (EC2) instance like m3.medium (using a spot instance will make it cheaper). Search for and select the PREDICTD Amazon Machine Image (AMI, id=ami-c8b82aa8) when you have the option.
 
 1. Once the instance is ready, ssh to it using its public DNS address (available on the EC2 browser console). The command on linux should look like 
     ```bash
@@ -27,7 +27,7 @@ This repository contains the code to run PREDICTD, a program to model the epigen
 1. Now, start up the cluster with a command line like the following. We recommend using a ```m4.xlarge``` instance for the head node, and a ```x1.16xlarge``` instance for the worker node. Always use spot instances for the workers by setting the ```--spot-price``` parameter, as this can save up to 90% on the cost of the workers.
 
     ```bash
-    /root/spark-ec2/spark-ec2 --key-pair=<EC2_keypair_name> --identity-file=/root/.ssh/<EC2_keypair_name>.pem --region=us-west-2 --ami=ami-067eee66 --master-instance-type=m4.xlarge --instance-type=x1.16xlarge --spot-price=2.00 --slaves=1 --spark-version=1.6.0 --hadoop-major-version=yarn --copy-aws-credentials --ganglia launch predictd-demo
+    /root/spark-ec2/spark-ec2 --key-pair=<EC2_keypair_name> --identity-file=/root/.ssh/<EC2_keypair_name>.pem --region=us-west-2 --ami=ami-c8b82aa8 --master-instance-type=m4.xlarge --instance-type=x1.16xlarge --spot-price=2.00 --slaves=1 --spark-version=1.6.0 --hadoop-major-version=yarn --copy-aws-credentials --ganglia launch predictd-demo
     ```
 
     When it asks whether to reformat HDFS, say "yes". There are additional options for configuring the way the cluster is set up. See the [spark-ec2 documentation](https://github.com/amplab/spark-ec2) for more info on the options. This will create two new instances in your AWS management console, one called predictd-demo-master (the head node of the cluster) and the other called predictd-demo-slave (the worker node of the cluster).
