@@ -79,15 +79,12 @@ for idx in xrange(0, len(all_parts), parts_at_once):
     adtr.pl = pl
 
     bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0!s}}_{{1!s}}.{:05d}.{{2!s}}.txt'.format(idx))
-    if idx >= 120:
-        imputed_part = sc.parallelize(all_parts[idx:idx+parts_at_once], numSlices=parts_at_once).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(500).map(lambda (x,y): avg_impute((x,y,None,None), second_order_params, folds, data_coords)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
-        imputed_part.count()
+    imputed_part = sc.parallelize(all_parts[idx:idx+parts_at_once], numSlices=parts_at_once).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(500).map(lambda (x,y): avg_impute((x,y,None,None), second_order_params, folds, data_coords)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+    imputed_part.count()
 
-        sorted_w_idx = imputed_part.repartition(200).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, None, None, None, None, None, winsize=25, sinh=False, coords=None, tmpdir=tmpdir)).count()
-        imputed_part.unpersist()
-        del(imputed_part)
-    else:
-        sorted_w_idx = sc.parallelize(all_parts[idx:idx+parts_at_once], numSlices=parts_at_once).flatMap(lambda x: adtr.read_in_part(x, data_shape, parts_idx)).repartition(200).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._just_write_bdg_coords(x, y, bdg_path, winsize=25, tmpdir=tmpdir)).count()
+    sorted_w_idx = imputed_part.repartition(200).sortByKey().mapPartitionsWithIndex(lambda x,y: pl._construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, None, None, None, None, None, winsize=25, sinh=False, coords=None, tmpdir=tmpdir)).count()
+    imputed_part.unpersist()
+    del(imputed_part)
     sc.stop()
 
 #start SparkContext
