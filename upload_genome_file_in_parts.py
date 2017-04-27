@@ -41,7 +41,7 @@ if __name__ == "__main__":
 
     #save the column coordinates to s3
     coord_key = out_bucket.new_key(key_txt + '.coord_order.pickle')
-    coord_key.set_contents_from_filename(args.input_bdg.replace('.bdg.gz', '.coord_order.pickle'))
+    coord_key.set_contents_from_filename(args.input_bdg.replace('.bdg.gz', '.coord_order.pickle'), headers={'x-amz-request-payer':'requester'})
 
     #save the data in parts
     with gzip.open(args.input_bdg, 'rb') as gzip_in:

@@ -28,7 +28,7 @@ def get_pickle_s3(bucketname, keyname):
     '''
     key = S3.get_bucket(bucketname).get_key(keyname)
     with NamedTemporaryFile(dir=TMPDIR) as tmp:
-        key.get_contents_to_file(tmp)
+        key.get_contents_to_file(tmp, headers={'x-amz-request-payer':'requester'})
         tmp.seek(0)
         pickled = pickle.load(tmp)
     return pickled
@@ -46,7 +46,7 @@ def set_pickle_s3(bucketname, keyname, obj):
     with NamedTemporaryFile(dir=TMPDIR) as tmp:
         pickle.dump(obj, tmp)
         tmp.seek(0)
-        key.set_contents_from_file(tmp)
+        key.set_contents_from_file(tmp, headers={'x-amz-request-payer':'requester'})
 
 def glob_keys(bucketname, glob_str):
     '''Query keys for the specified bucket and return keys with 

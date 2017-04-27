@@ -89,7 +89,7 @@ class ExcProc(mp.Process):
                     if pth.startswith('s3://'):
                         bucket_txt, key_txt = s3_library.parse_s3_url(pth)
                         local_pth = os.path.join(self.out_dir, os.path.basename(pth))
-                        s3_library.S3.get_bucket(bucket_txt).get_key(key_txt).get_contents_to_filename(local_pth)
+                        s3_library.S3.get_bucket(bucket_txt).get_key(key_txt).get_contents_to_filename(local_pth, headers={'x-amz-request-payer':'requester'})
                         pth = local_pth
                     paths[idx] = (paths[idx][0], pth)
 #                if sum(inits) == 0:
@@ -133,7 +133,7 @@ def get_windows_file(path, working_dir):
             bucket_txt = path[2]
             key_txt = '/'.join(path[3:])
             key = s3_library.S3.get_bucket(bucket_txt).get_key(key_txt)
-            key.get_contents_to_filename(tmp_path)
+            key.get_contents_to_filename(tmp_path, headers={'x-amz-request-payer':'requester'})
         else:
             shutil.copy(path, tmp_path)
     return tmp_path

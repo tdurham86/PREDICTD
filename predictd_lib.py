@@ -333,7 +333,7 @@ def load_model_old(model_url, load_data_too=False):
     cmd_key = s3_library.S3.get_bucket(bucket_txt).get_key(os.path.join(key_txt, 'command_line.txt'))
     if not cmd_key:
         cmd_key = s3_library.S3.get_bucket(bucket_txt).get_key(os.path.join(os.path.dirname(key_txt), 'command_line.txt'))
-    cmd_line = dict([elt.strip().split('=') if '=' in elt else [elt.strip, True] for elt in shlex.split(cmd_key.get_contents_as_string())])
+    cmd_line = dict([elt.strip().split('=') if '=' in elt else [elt.strip, True] for elt in shlex.split(cmd_key.get_contents_as_string(headers={'x-amz-request-payer':'requester'}))])
     rc = float(cmd_line.get('--rc', 2.88e-4))
     ra = float(cmd_line.get('--ra', 5.145e-11))
     ri = float(cmd_line.get('--ri', 9.358e-14))
@@ -441,7 +441,7 @@ def print_iter_errs(iter_errs, out_bucket, out_key,
         iter_errs_str += ('\t'.join([str(idx)] + [str(elt[i]) for i in range(len(elt))]) + '\n')
     bucket = s3_library.S3.get_bucket(out_bucket)
     key = bucket.new_key(out_key)
-    key.set_contents_from_string(iter_errs_str)
+    key.set_contents_from_string(iter_errs_str, headers={'x-amz-request-payer':'requester'})
 
 def _calc_mse_helper(gtotal_elt, ct_assay, ct_assay_bias, ri, rbi, subsets=None):
     gidx, data, genome, genome_bias = gtotal_elt[:4]
@@ -1002,7 +1002,7 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         if STORAGE == 'S3':
             bucket = s3_library.S3.get_bucket('encodeimputation2')
             key = bucket.new_key('objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx))
-            key.set_contents_from_string('\n'.join([str(elt) for elt in objective_vals]) + '\n')
+            key.set_contents_from_string('\n'.join([str(elt) for elt in objective_vals]) + '\n', headers={'x-amz-request-payer':'requester'})
         elif STORAGE == 'BLOB':
             azure_library.load_blob_from_text('encodeimputation', 'objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx), '\n'.join([str(elt) for elt in objective_vals]) + '\n')
 
@@ -1195,7 +1195,7 @@ def one_iteration_ct_genome(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, a
         if STORAGE == 'S3':
             bucket = s3_library.S3.get_bucket('encodeimputation2')
             key = bucket.new_key('objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx))
-            key.set_contents_from_string('\n'.join([str(elt) for elt in objective_vals]) + '\n')
+            key.set_contents_from_string('\n'.join([str(elt) for elt in objective_vals]) + '\n', headers={'x-amz-request-payer':'requester'})
         elif STORAGE == 'BLOB':
             azure_library.load_blob_from_text('encodeimputation', 'objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx), '\n'.join([str(elt) for elt in objective_vals]) + '\n')
 
@@ -2321,8 +2321,8 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
             time.sleep(numpy.random.randint(10,20))
         else:
             #get chrom_sizes
-            s3_library.S3.get_bucket('encodeimputation-alldata').get_key('hg19.chrom.sizes').get_contents_to_filename(chrom_sizes_path)
-            s3_library.S3.get_bucket('encodeimputation-alldata').get_key('hg19.chrom.bed').get_contents_to_filename(chrom_bed_path)
+            s3_library.S3.get_bucket('encodeimputation-alldata').get_key('hg19.chrom.sizes').get_contents_to_filename(chrom_sizes_path, headers={'x-amz-request-payer':'requester'})
+            s3_library.S3.get_bucket('encodeimputation-alldata').get_key('hg19.chrom.bed').get_contents_to_filename(chrom_bed_path, headers={'x-amz-request-payer':'requester'})
             os.rmdir(chrom_sizes_path+'.lock')
     for ct_name, assay_name in ctassay_part:
         for bdg_type in ['imp', 'obs']:
@@ -2341,7 +2341,7 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
             os.remove(out_bdg)
 
             out_key = s3_library.S3.get_bucket(out_bucket).new_key(os.path.join(out_root, os.path.basename(out_bw)))
-            out_key.set_contents_from_filename(out_bw)
+            out_key.set_contents_from_filename(out_bw, headers={'x-amz-request-payer':'requester'})
             if make_public is True:
                 out_key.make_public()
             os.remove(out_bw)

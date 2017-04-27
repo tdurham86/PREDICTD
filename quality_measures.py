@@ -119,7 +119,7 @@ if __name__ == "__main__":
         window_regions_name = 'hars_with_encodePilots.25bp.windows.bed.gz'
     window_regions_path = os.path.join(working_dir, window_regions_name)
     if not os.path.exists(window_regions_path):
-        s3_library.S3.get_bucket('encodeimputation-alldata').get_key(os.path.join('25bp', window_regions_name)).get_contents_to_filename(window_regions_path)
+        s3_library.S3.get_bucket('encodeimputation-alldata').get_key(os.path.join('25bp', window_regions_name)).get_contents_to_filename(window_regions_path, headers={'x-amz-request-payer':'requester'})
 
     cols_w_data = set(imputed.nonzero()[1])
     for elt in sorted(data_idx.values(), key=lambda x: x[:2]):
@@ -199,7 +199,7 @@ if __name__ == "__main__":
         peaks_key = 'peak_analysis/narrowPeakProc/{!s}-{!s}.sorted.counted.narrowPeak.gz'.format(elt[0], elt[1].replace('H2AZ', 'H2A'))
         peaks_tmp = os.path.join(working_dir, os.path.basename(peaks_key))
         try:
-            s3_library.S3.get_bucket('encodeimputation').get_key(peaks_key).get_contents_to_filename(peaks_tmp)
+            s3_library.S3.get_bucket('encodeimputation').get_key(peaks_key).get_contents_to_filename(peaks_tmp, headers={'x-amz-request-payer':'requester'})
         except AttributeError:
             catchpeakobs = None
         else:
@@ -224,4 +224,4 @@ if __name__ == "__main__":
             out.write('\t'.join([str(elt) for elt in out_vals]) + '\n')
 
         out_bucket, out_key = s3_library.parse_s3_url(os.path.dirname(args.imputed_glob))
-        s3_library.S3.get_bucket(out_bucket).new_key(os.path.join(os.path.dirname(out_key), out_name)).set_contents_from_filename(os.path.join(working_dir, out_name))
+        s3_library.S3.get_bucket(out_bucket).new_key(os.path.join(os.path.dirname(out_key), out_name)).set_contents_from_filename(os.path.join(working_dir, out_name), headers={'x-amz-request-payer':'requester'})
