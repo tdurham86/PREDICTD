@@ -75,7 +75,7 @@ This repository contains the code to run PREDICTD, a program to model the epigen
     ```
     This is the directory where Spark will write temporary files associated with the jobs that are running. The PREDICTD AMI comes with a 500 GB EBS drive that is mounted under ```/data```, and we recommend that you specify a subdirectory on this drive.
 
-1. Set your S3 access key information as environment variables in the same way that you did when setting up the cluster.
+1. Set your S3 access key information as environment variables.
     ```bash
     export AWS_ACCESS_KEY_ID=<AWS_ACCESS>
     export AWS_SECRET_ACCESS_KEY=<AWS_SECRET> 
