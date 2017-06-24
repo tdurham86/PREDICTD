@@ -86,12 +86,30 @@ def trySplits(mat_coord_list, num_splits, num_tries):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('data_idx_url')
+    parser.add_argument('--test_fold_data_idx_url')
     parser.add_argument('--num_test_folds', type=int, default=5)
     parser.add_argument('--num_valid_folds', type=int, default=8)
     parser.add_argument('--num_tries', type=int, default=1000)
     args = parser.parse_args()
 
-    if 'data_idx' in os.path.basename(args.data_idx_url):
+    #a data_idx has been passed in that contains the information to generate a single
+    #test fold, now use the rest of the experiments in the data_idx_url parameter to
+    #generate validation folds
+    if args.test_fold_data_idx_url is not None:
+        #get total data_idx and matrix size
+        bucket_txt, key_txt = s3_library.parse_s3_url(args.data_idx_url)
+        data_idx = s3_library.get_pickle_s3(bucket_txt, key_txt)
+        mat_coords = [elt[-1] for elt in data_idx.values()]
+        mat_size = tuple(numpy.array(mat_coords).max(axis=0) + 1)
+        #get the test data sets and generate test fold
+        bucket_txt, key_txt = s3_library.parse_s3_url(args.test_fold_data_idx_url)
+        test_data_idx = s3_library.get_pickle_s3(bucket_txt, key_txt)
+        test_mat_coords = [elt[-1] for elt in test_data_idx.values()]
+        for coord in test_mat_coords:
+            del(mat_coords[mat_coords.index(coord)])
+        test_folds = [(mat_coords, test_mat_coords)]
+    #the tensor description is passed in; generate both test and validation folds
+    elif 'data_idx' in os.path.basename(args.data_idx_url):
         bucket_txt, key_txt = s3_library.parse_s3_url(args.data_idx_url)
         data_idx = s3_library.get_pickle_s3(bucket_txt, key_txt)
         mat_coords = [elt[-1] for elt in data_idx.values()]
@@ -100,7 +118,7 @@ if __name__ == "__main__":
             test_folds = trySplits(mat_coords, args.num_test_folds, args.num_tries)
         else:
             test_folds = [(mat_coords, [])]
-
+    #the test folds have already been generated; just add in validation folds
     elif os.path.basename(args.data_idx_url) == 'folds.5.pickle':
         bucket_txt, key_txt = s3_library.parse_s3_url(args.data_idx_url)
         data_idx = None
