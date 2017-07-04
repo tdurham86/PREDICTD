@@ -135,6 +135,19 @@ if __name__ == "__main__":
             train_mat[list(zip(*train_coords))] = False
             valid_mat = numpy.ones(mat_size, dtype=bool)
             valid_mat[list(zip(*valid_coords))] = False
+            #if any cell types or assays do not have any entries,
+            #just move that row/column from the validation matrix
+            #to the training matrix
+            rowsums = numpy.sum(~train_mat, axis=1)
+            if not numpy.all(rowsums):
+                zero_idx = numpy.where(rowsums == 0)[0]
+                train_mat[zero_idx,:] = valid_mat[zero_idx,:]
+                valid_mat[zero_idx,:] = True
+            colsums = numpy.sum(~train_mat, axis=0)
+            if not numpy.all(colsums):
+                zero_idx = numpy.where(colsums == 0)[0]
+                train_mat[:,zero_idx] = valid_mat[:,zero_idx]
+                valid_mat[:,zero_idx] = True
             valid_mats.append({'train':train_mat, 'valid':valid_mat})
         test_mat = numpy.ones(mat_size, dtype=bool)
         test_mat[list(zip(*test_set))] = False

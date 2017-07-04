@@ -53,7 +53,9 @@ def train_consolidated(args):
     genome_bias.unpersist()
     del(genome_bias)
 
-    gtotal_init = gtotal_all.sample(False, args.training_fraction, args.training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+#    gtotal_init = gtotal_all.sample(False, args.training_fraction, args.training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+    training_fraction_seed = rs.randint(0, int(1e8))
+    gtotal_init = gtotal_all.sample(False, args.training_fraction, training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     gtotal_init.count()
     
     #train factors with parallel SGD 
@@ -87,13 +89,14 @@ def train_consolidated(args):
                         args.run_bucket, args.out_root, iter_errs_header_line='Iter\tObjective\tTrain\tValid\n')
 
     #make browser view of H1 cell line tracks
-    print('Generate UCSC Genome Browser tracks.')
-    data_idx = s3_library.get_pickle_s3(*s3_library.parse_s3_url(os.path.join(os.path.dirname(args.data_url), 'data_idx.pickle')))
-    assay_list = [e2[0] for e2 in sorted(set([(e1[1], e1[-1][1]) for e1 in data_idx.values()]), key=lambda x: x[1])]
-    ct_list = [e2[0] for e2 in sorted(set([(e1[0], e1[-1][0]) for e1 in data_idx.values()]), key=lambda x: x[1])]
-
-    coords_to_output = list(zip(*itertools.product((ct_list.index('H1_Cell_Line'),), numpy.arange(len(assay_list)))))
-    pl.write_bigwigs2(genome_total.repartition(120), ct, ct_bias, assay, assay_bias, gmean, ct_list, assay_list, args.run_bucket, args.out_root, sinh=not args.no_bw_sinh, coords=coords_to_output)
+    if args.no_browser_tracks is False:
+        print('Generate UCSC Genome Browser tracks.')
+        data_idx = s3_library.get_pickle_s3(*s3_library.parse_s3_url(os.path.join(os.path.dirname(args.data_url), 'data_idx.pickle')))
+        assay_list = [e2[0] for e2 in sorted(set([(e1[1], e1[-1][1]) for e1 in data_idx.values()]), key=lambda x: x[1])]
+        ct_list = [e2[0] for e2 in sorted(set([(e1[0], e1[-1][0]) for e1 in data_idx.values()]), key=lambda x: x[1])]
+        
+        coords_to_output = list(zip(*itertools.product((ct_list.index('H1_Cell_Line'),), numpy.arange(len(assay_list)))))
+        pl.write_bigwigs2(genome_total.repartition(120), ct, ct_bias, assay, assay_bias, gmean, ct_list, assay_list, args.run_bucket, args.out_root, sinh=not args.no_bw_sinh, coords=coords_to_output)
 
 
 parser = argparse.ArgumentParser()
@@ -157,7 +160,8 @@ parser.add_argument('--folds_fname', help='Basename for the folds.pickle file if
 #parser.add_argument('--final_genome_training_on_all_loci', action='store_true', default=False)
 parser.add_argument('--no_bw_sinh', default=False, action='store_true')
 parser.add_argument('--training_fraction', type=float, default=0.01)
-parser.add_argument('--training_fraction_seed', type=int, default=55)
+#parser.add_argument('--training_fraction_seed', type=int, default=55)
+parser.add_argument('--no_browser_tracks', action='store_true', default=False)
 
 if __name__ == "__main__":
     args = parser.parse_args()

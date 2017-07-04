@@ -33,9 +33,16 @@ STORAGE = 'S3'
 SUBSET_TRAIN = 0
 SUBSET_VALID = 1
 SUBSET_TEST = 2
+SUBSET_MAP = {'train':SUBSET_TRAIN,
+              'valid':SUBSET_VALID,
+              'test':SUBSET_TEST}
+
 MSE_TRAIN = 1
 MSE_VALID = 2
 MSE_TEST = 3
+MSE_MAP = {'train':MSE_TRAIN,
+           'valid':MSE_VALID,
+           'test':MSE_TEST}
 
 #colors for bigwig tracks
 ASSAY_COLORS = {'H3K27me3':'255,0,0',    #red
@@ -252,8 +259,12 @@ def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, tr
     if pickle_url.startswith('s3'):
         data = load_saved_rdd(pickle_url.replace('s3://', 's3n://'))
         if folds_fname is not None:
-            subsets = load_subsets(pickle_url, fold_idx=fold_idx, valid_fold_idx=valid_fold_idx, trainall=trainall,
-                                   folds_fname=folds_fname)
+            if folds_fname.startswith('s3'):
+                subsets = load_subsets(folds_fname, fold_idx=fold_idx, valid_fold_idx=valid_fold_idx, trainall=trainall,
+                                       folds_fname=os.path.basename(folds_fname))
+            else:
+                subsets = load_subsets(pickle_url, fold_idx=fold_idx, valid_fold_idx=valid_fold_idx, trainall=trainall,
+                                       folds_fname=folds_fname)
     elif pickle_url.startswith('wasb'):
         data = load_saved_rdd(pickle_url)
         if folds_fname is not None:
@@ -288,6 +299,7 @@ def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, tr
 
 def load_model(model_url, load_data_too=False):
     bucket_txt, key_txt = s3_library.parse_s3_url(model_url)
+    print(bucket_txt, key_txt)
     if not s3_library.S3.get_bucket(bucket_txt).get_key(os.path.join(key_txt, 'ct_factors.pickle')):
         return load_model_old(model_url, load_data_too=load_data_too)
     else:
@@ -296,23 +308,24 @@ def load_model(model_url, load_data_too=False):
         assay, assay_bias = s3_library.get_pickle_s3(bucket_txt, os.path.join(key_txt, 'assay_factors.pickle'))
         genome_params = load_saved_rdd(os.path.join(model_url, 'genome_factors.rdd.pickle')).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         hyperparams = s3_library.get_pickle_s3(bucket_txt, os.path.join(key_txt, 'hyperparameters.pickle'))
-        data = [load_saved_rdd(hyperparams['data_url']).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)] if load_data_too is True else None
+        data = [load_saved_rdd(hyperparams['args'].data_url).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)] if load_data_too is True else None
         #recursively load hyperparameters (and data, if requested) of the model this one is based on
-        if hyperparams.get('model_url'):
-            model_hyps = load_model(hyperparams['model_url'], load_data_too=load_data_too)
-            model_data_url = model_hyps[6].get('data_url')
-            model_model_url = model_hyps[6].get('model_url')
+        if 'model_url' in hyperparams['args']:
+            model_hyps = load_model(hyperparams['args'].model_url, load_data_too=load_data_too)
+            model_data_url = model_hyps[6]['args'].data_url
+            if 'model_url' in model_hyps[6]['args']:
+                model_model_url = model_hyps[6]['args'].model_url
             model_hyps[6].update(hyperparams)
             if model_data_url and isinstance(model_data_url, str):
-                model_hyps[6]['data_url'] = [model_data_url, hyperparams['data_url']]
+                model_hyps[6]['args'].data_url = [model_data_url, hyperparams['data_url']]
             else:
                 assert isinstance(model_data_url, list), "model_data_url must be list"
-                model_hyps[6]['data_url'] = model_data_url.append(hyperparams['data_url'])
+                model_hyps[6]['args'].data_url = model_data_url.append(hyperparams['args'].data_url)
             if model_model_url and isinstance(model_model_url, str):
-                model_hyps[6]['data_url'] = [model_model_url, hyperparams['model_url']]
+                model_hyps[6]['args'].data_url = [model_model_url, hyperparams['args'].model_url]
             else:
                 assert isinstance(model_model_url, list), "model_model_url must be list"
-                model_hyps[6]['model_url'] = model_model_url.append(hyperparams['model_url'])
+                model_hyps[6]['args'].model_url = model_model_url.append(hyperparams['args'].model_url)
             if load_data_too is True:
                 data = model_hyps[7] + data
             hyperparams = model_hyps[6]
@@ -2381,6 +2394,24 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
     with smart_open.smart_open(out_url, 'w') as out:
         out.write('\n'.join(track_lines))    
     return
+
+def impute_and_avg(model_urls, coords='test'):
+    models = []
+    data_rdd = None
+    for url in model_urls:
+        (gmean, ct, ct_bias, assay, assay_bias, 
+         genome_params, hyperparams, data) = load_model(url, load_data_too=True if data_rdd is None else False)
+        if data_rdd is None:
+            data_rdd = data[0]
+        gtotal_rdd = genome_params.join(data_rdd).map(lambda (gidx, ((g, gb), d)): (gidx, d, g, gb))
+        if coords in ['train', 'valid', 'test']:
+            coords = numpy.where(~hyperparams['subsets'][SUBSET_MAP[coords]])
+        imputed_rdd = compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=coords)
+        models.append(imputed_rdd)
+    num_parts = models[0].getNumPartitions()
+    model_count = float(len(models))
+    avg_imp = sc.union(models).reduceByKey(lambda x,y: x + y, numPartitions=num_parts).mapValues(lambda x: x/model_count)
+    return avg_imp
 
 def debug(gtotal=None):
     gmean = s3_library.get_pickle_s3('encodeimputation-alldata', 'predictd_demo/demo_output13/gmean.pickle')

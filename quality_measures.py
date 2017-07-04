@@ -1,24 +1,100 @@
 #! /usr/bin/env python
 
 import argparse
+import glob
 import gzip
+import itertools
+import multiprocessing as mp
 import numpy
 import os
 import pickle
+import Queue
 import scipy.stats as stats
 import scipy.sparse as sps
-import sklearn.metrics as metrics
+from sklearn import metrics
 import smart_open
+import sparkpickle
 import subprocess
 import sys
 import tempfile
+import time
 
 sys.path.append(os.path.dirname(__file__))
 import s3_library
-import transform_imputed_data_test25 as tid
+#import transform_imputed_data_test25 as tid
+
+def flatten_csr(csr_mat):
+    rownum, colnum = csr_mat.shape
+    for i in range(rownum):
+        csr_mat.indices[csr_mat.indptr[i]:csr_mat.indptr[i+1]] += colnum * i
+    csr_mat.indptr = [0,len(csr_mat.indices)]
+    flattened = sps.csr_matrix((csr_mat.data, csr_mat.indices, csr_mat.indptr), shape=(1, rownum * colnum))
+    flattened.data[numpy.nan_to_num(flattened.data) < 0] = 0
+    return flattened
+
+def load_sparkpickles(in_queue, out_queue, flatten=True):
+    while True:
+        try:
+            path = in_queue.get(True, 10)
+        except Queue.Empty:
+            return
+        tries = 5
+        while True:
+            try:
+                if path.startswith('s3://'):
+                    with smart_open.smart_open(path, 'rb') as path_in:
+                        if path.endswith('.pickle'):
+                            part_data = pickle.loads(path_in.read())
+                        else:
+                            part_data = sparkpickle.loads(path_in.read())
+                else:
+                    with open(path, 'rb') as path_in:
+                        part_data = sparkpickle.load(path_in)
+            except:
+                if tries:
+                    tries -= 1
+                else:
+                    raise
+            else:
+                break
+        out_queue.put_nowait([(idx, flatten_csr(mat) if flatten is True else mat) for idx, mat in part_data])
+#            out_queue.put_nowait(sparkpickle.load(path_in))
+        time.sleep(0.1)
+
+def read_in_parts(parts_glob, num_tries=4, num_procs=16, flatten=True):
+    part_q = mp.Queue()
+    data_q = mp.Queue()
+    if parts_glob.startswith('s3://'):
+        bucket_txt, key_txt = s3_library.parse_s3_url(parts_glob)
+        glob_res = ['s3://{!s}/{!s}'.format(bucket_txt, elt.name) for elt in s3_library.glob_keys(bucket_txt, key_txt)]
+    else:
+        glob_res = glob.glob(parts_glob)
+    for part in glob_res:
+        part_q.put_nowait(part)
+        time.sleep(0.005)
+    procs = [mp.Process(target=load_sparkpickles, args=(part_q, data_q), kwargs={'flatten':flatten}) for _ in range(num_procs)]
+    for proc in procs:
+        proc.start()
+
+    data = []
+    tries = num_tries
+    while tries:
+        try:
+            data.append(data_q.get(True, 10))
+        except Queue.Empty:
+            tries -= 1
+        else:
+            tries = num_tries
+    data = sorted(itertools.chain(*data), key=lambda x: x[0])
+#    return data
+    data_gidx, data = list(zip(*data))
+    if flatten is True:
+        return data_gidx, sps.vstack(data).transpose()
+    else:
+        return data_gidx, data
 
 def match_keys(gidx1, gidx2):
-    '''Takes two sorted gidx lists as returned from tid.read_in_parts() and finds the coordinates in gidx2
+    '''Takes two sorted gidx lists as returned from read_in_parts() and finds the coordinates in gidx2
     that map to those in gidx1. Note that gidx1 must be a subset of gidx2.
     '''
     offset = 0
@@ -46,7 +122,7 @@ def join_data(gidx1, data1, gidx2, data2):
 def get_data(parts_glob, working_dir, num_procs, save_to_disk=False):
     parts_path = os.path.join(working_dir, os.path.basename(os.path.dirname(parts_glob)))
     if save_to_disk is False or not os.path.isfile(parts_path):
-        parts_gidx, parts = tid.read_in_parts(parts_glob, flatten=True, num_procs=num_procs)
+        parts_gidx, parts = read_in_parts(parts_glob, flatten=True, num_procs=num_procs)
         parts = parts.T
         if save_to_disk is True:
             with open(parts_path, 'wb') as out:
@@ -73,15 +149,22 @@ if __name__ == "__main__":
 
     data_idx_bucket, data_idx_key = s3_library.parse_s3_url(args.data_idx_url)
     data_idx = s3_library.get_pickle_s3(data_idx_bucket, data_idx_key)
-    subsets_key = os.path.join(os.path.dirname(data_idx_key), args.fold_name)
-    if s3_library.S3.get_bucket(data_idx_bucket).get_key(subsets_key):
-        subsets = s3_library.get_pickle_s3(data_idx_bucket, subsets_key)
-        if isinstance(subsets, 'dict'):
+    if args.fold_name.startswith('s3'):
+        subsets_bucket, subsets_key = s3_library.parse_s3_url(args.fold_name)
+    else:
+        subsets_bucket = data_idx_bucket
+        subsets_key = os.path.join(os.path.dirname(data_idx_key), args.fold_name)
+    if s3_library.S3.get_bucket(subsets_bucket).get_key(subsets_key):
+        subsets = s3_library.get_pickle_s3(data_idx_bucket, subsets_key)[args.fold_idx]
+        subsets_dict = {}
+        if isinstance(subsets, dict):
             if isinstance(subsets['train'], list):
                 subsets['valid'] = subsets['train'][args.valid_fold_idx]['valid']
                 subsets['train'] = subsets['train'][args.valid_fold_idx]['train']
         else:
-            raise Exception('New list-based subsets data structure not yet supported.')
+            subsets_dict['test'] = subsets['train'][args.valid_fold_idx][2]
+            subsets_dict['valid'] = subsets['train'][args.valid_fold_idx][1]
+            subsets_dict['train'] = subsets['train'][args.valid_fold_idx][0]
     else:
         subsets = None
 #    data_idx = s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/data_idx.pickle')
