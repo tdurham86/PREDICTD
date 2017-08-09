@@ -1,0 +1,27 @@
+#The number of executors to run on the cluster (usually set to the 
+#number of available worker node cores divided by the cores per executor,
+#specified in the spark.executor.cores parameter below.
+spark.executor.instances 8
+
+#The number of cores that should be accessible for each executor. A single executor
+#can run multiple jobs in parallel, but must exist on a single machine. I have found
+#that using 4 cores per executor works well.
+spark.executor.cores 4
+
+#The amount of memory available to each executor. Usually works to set this to the
+#total available worker memory divided by the number of executors, with two GB or so
+#subtracted to allow some overhead.
+spark.executor.memory 30g
+
+#The number of cores to use on the driver program, which runs on the master node.
+spark.driver.cores 2
+
+#The amount of memory the driver program can use on the master node.
+spark.driver.memory 12g
+
+#Related to the amount of memory available to the driver; I have found it
+#helpful to keep this value pretty close to the spark.driver.memory value.
+spark.driver.maxResultSize 10g
+
+spark.executor.extraLibraryPath	/root/ephemeral-hdfs/lib/native/
+spark.executor.extraClassPath	/root/ephemeral-hdfs/conf

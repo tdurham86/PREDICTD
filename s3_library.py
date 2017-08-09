@@ -5,6 +5,7 @@ import boto
 import fnmatch
 import os
 import pickle
+import sys
 from tempfile import NamedTemporaryFile
 
 ##with open(os.path.join(os.path.dirname(__file__), 's3_credentials.txt')) as creds:
@@ -19,6 +20,16 @@ try:
         os.mkdir(TMPDIR)
 except OSError:
     TMPDIR = os.getcwd()
+
+#set up S3 environment variables
+creds_path = '/root/.aws/credentials'
+if os.path.isfile(creds_path):
+    with open(creds_path) as creds_in:
+        creds_dict = dict([elt.strip().split(' = ') for elt in creds_in if ' = ' in elt])
+    os.environ['AWS_ACCESS_KEY_ID'] = creds_dict['aws_access_key_id']
+    os.environ['AWS_SECRET_ACCESS_KEY'] = creds_dict['aws_secret_access_key']
+else:
+    sys.stderr.write('Warning: No AWS credentials found in /root/.aws directory.')
 
 def parse_s3_url(s3_url):
     '''Parse out and return the bucket name and key path of an s3 url.

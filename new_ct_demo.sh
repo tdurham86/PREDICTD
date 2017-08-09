@@ -8,3 +8,7 @@ python ~/proj/updated_imp_code/aws/predictd/assemble_new_ct_datasets.py --file_m
 python ~/proj/updated_imp_code/aws/predictd/upload_genome_file_in_parts.py --input_bdg=./tmpYQZSLg.bdg.gz --out_url_base=s3://encodeimputation-alldata/predictd_demo/data/assembled_data --lines_per_file=1000000
 
 #3) Use the data to create an RDD for imputation.
+python /root/predictd/assembled_data_to_rdd.py --data_parts_url_base=s3://encodeimputation-alldata/predictd_demo/data/assembled_data --out_url=s3://encodeimputation-alldata/predictd_demo/data/fetal_spinal_cord.rdd.pickle --data_shape=1,24
+
+#4) Train model and impute data
+
