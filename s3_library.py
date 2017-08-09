@@ -14,6 +14,11 @@ from tempfile import NamedTemporaryFile
 #S3 = boto.connect_s3(**cred_info)
 S3 = boto.connect_s3()
 TMPDIR='/data/tmp'
+try:
+    if not os.path.isdir(TMPDIR):
+        os.mkdir(TMPDIR)
+except OSError:
+    TMPDIR = os.getcwd()
 
 def parse_s3_url(s3_url):
     '''Parse out and return the bucket name and key path of an s3 url.
