@@ -243,7 +243,7 @@ if __name__ == "__main__":
 #    parser.add_argument('--data_root')
     parser.add_argument('--working_dir', default=os.getcwd())
     parser.add_argument('--windows_file', default='s3://encodeimputation-alldata/25bp/hg19.25bp.windows.bed.gz')
-    parser.add_argument('--data_idx', default='s3://encodeimputation-alldata/25bp/data_idx.pickle')
+#    parser.add_argument('--data_idx', default='s3://encodeimputation-alldata/25bp/data_idx.pickle')
     parser.add_argument('--procnum', type=int, default=4)
     args = parser.parse_args()
 
@@ -258,10 +258,11 @@ if __name__ == "__main__":
     sorted_cts = sorted(set(filemap[:,1]))
 
     #get assay order (column coordinates)
-    bucket_txt, key_txt = s3_library.parse_s3_url(args.data_idx)
-    data_idx = s3_library.get_pickle_s3(bucket_txt, key_txt)
-    sorted_assays = [elt[0] for elt in 
-                     sorted(set((elt[1], elt[-1][1]) for elt in data_idx.values()), key=lambda x:x[1])]
+    sorted_assays = sorted(set(filemap[:,2]))
+#    bucket_txt, key_txt = s3_library.parse_s3_url(args.data_idx)
+#    data_idx = s3_library.get_pickle_s3(bucket_txt, key_txt)
+#    sorted_assays = [elt[0] for elt in 
+#                     sorted(set((elt[1], elt[-1][1]) for elt in data_idx.values()), key=lambda x:x[1])]
 
     #set coordinates for each experiment in the filemap
     coords = numpy.array([(sorted_cts.index(filemap[i,1]), sorted_assays.index(filemap[i,2]))
@@ -269,8 +270,13 @@ if __name__ == "__main__":
 
     #save pickled filemap with coordinates
     print('Saving a copy of the file map with tensor coordinates in Python pickle format.')
-    with smart_open.smart_open(os.path.join(os.path.splitext(args.file_map)[0] + '.w_coords.pickle'), 'wb') as out:
-        out.write(pickle.dumps(numpy.hstack([filemap, coords])))
+    fmap_w_coords = numpy.hstack([filemap, coords])
+    fmap_w_coords_path = os.path.splitext(args.file_map)[0] + '.w_coords.pickle'
+    with smart_open.smart_open(fmap_w_coords_path, 'wb') as out:
+        out.write(pickle.dumps(fmap_w_coords))
+    #also save a local copy so that the upload script can transform it to data_idx
+    with open(os.path.join(args.working_dir, os.path.basename(fmap_w_coords_path)), 'wb') as out:
+        pickle.dump(fmap_w_coords, out)
 
     #set up multiprocessing queue and feed in the paths to be joined with unionbg
     print('Combining data files.')
@@ -315,7 +321,8 @@ if __name__ == "__main__":
             elt.terminate()
         raise err
 
-    print('Multiprocessing complete. Finishing last bedtools unionbedg.')
+    print('Multiprocessing complete.')
+#    print('Multiprocessing complete. Finishing last bedtools unionbedg.')
 #    data_files = glob.glob('/data/hierarchical/*.bedGraph.gz')
 #    outname = write_to_proc(data_files)
 #    os.rename(outname, '/data/hierarchical/alldata.25bp.bedGraph.gz')

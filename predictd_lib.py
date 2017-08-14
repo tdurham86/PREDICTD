@@ -2431,3 +2431,67 @@ def debug(gtotal=None):
     write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean, 
                    ct_list, assay_list, 'encodeimputation-alldata', 'predictd_demo/demo_output14', 
                    winsize=25, sinh=True, make_public=True, tmpdir='/data/tmp')
+
+def _merge_rdds_helper(rdd_elt1, rdd_elt2, rdd2_to_rdd1_idx):
+    elt2_vals = numpy.zeros((rdd_elt2.shape[0], rdd_elt1.shape[1]))
+    elt2_vals[:,rdd2_to_rdd1_idx] += rdd_elt2.toarray()
+    return vstack_csr_matrices(rdd_elt1, sps.csr_matrix(elt2_vals))
+
+def _make_rdd2_to_rdd1_idx(data_idx1, data_idx2):
+    '''This function is much like the one above, except it only merges one
+    RDD element. It is called from the impute_with_model.py script when it 
+    is constructing a limited section of the genome for applying the model.
+    '''
+    rdd1_col_name_to_idx = {elt[1]:elt[-1][1] for elt in data_idx1.values()}
+    rdd2_col_name_idx_tuples = set((elt[1], elt[-1][1]) for elt in data_idx2.values())
+    rdd2_col_name_list = [elt[0] for elt in sorted(rdd2_col_name_idx_tuples, key=lambda x:x[1])]
+    rdd2_to_rdd1_idx = [rdd1_col_name_to_idx[col_name] for col_name in rdd2_col_name_list 
+                        if col_name in rdd1_col_name_to_idx]
+    return rdd2_to_rdd1_idx
+
+def merge_rdds(rdd1, data_idx1, rdd2, data_idx2, subsets):
+    '''This function takes two RDD objects (gidx, data_elt) and does 
+    element-wise vstack along the genome axis. For any given genomic bin, 
+    it will simply append to the cell type (y) axis, but align the assay 
+    (x) axis of rdd2 with that of rdd1 based on the assay names and 
+    coordinates in data_idx1. For example, if there are fewer assays in 
+    rdd2 than rdd1, empty columns will be added to represent the missing 
+    assays in rdd2. If more assays are present in rdd2, then they will be 
+    removed. Outputs the merged RDD and an updated data_idx. This function
+    is intended for the case that a user wants to add a cell type to the
+    tensor, although one could use it to add an assay by transposing the
+    cell type and assay axes in the rdds and data_idx parameters.
+    '''
+    #merge RDD elements
+    rdd2_to_rdd1_idx = _make_rdd2_to_rdd1_idx(data_idx1, data_idx2)
+    merged_rdd = rdd1.join(rdd2).mapValues(lambda (r1, r2): _merge_rdds_helper(r1, r2, rdd2_to_rdd1_idx))
+
+    #merge data_idx
+    rdd1_shape = rdd1.first()[1].shape
+    merged_data_idx = dict(data_idx1.items())
+    new_data_coords = []
+    for key, val in data_idx2.items():
+#    for idx, (key, val) in enumerate(data_idx2.items()):
+#        if not idx:
+#            print(key, val)
+#            print(rdd1_shape)
+#            print(rdd2_to_rdd1_idx)
+#            print(rdd1_col_name_to_idx)
+#            print((val[-1][0] + rdd1_shape[0], rdd2_to_rdd1_idx[val[-1][1]]))
+        val = list(val)
+        val[-1] = (val[-1][0] + rdd1_shape[0], rdd2_to_rdd1_idx[val[-1][1]])
+        #keep a separate record of these coordinates for setting the 
+        #new training data point coordinates in the subsets
+        new_data_coords.append(val[-1])
+        merged_data_idx[key + '_rdd2'] = val
+
+    #merge subsets
+    rdd2_shape = numpy.array(rdd2.first()[1].shape, dtype=int)
+    rdd2_data_coords = numpy.array(zip(*[elt[-1] for elt in data_idx2.values()]))
+    merged_subsets = [numpy.vstack([elt, numpy.ones((rdd2_shape[0], elt.shape[1])).astype(bool)]) 
+                      for elt in subsets]
+    new_train_coords = tuple(zip(*new_data_coords))
+    merged_subsets[SUBSET_TRAIN][new_train_coords] = False
+
+    return merged_rdd, merged_data_idx, merged_subsets
+

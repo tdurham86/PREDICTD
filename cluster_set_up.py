@@ -29,6 +29,7 @@ def set_up_spark_env():
                 senv_out.write('export SPARK_LOCAL_DIRS="/data/spark"\n')
             else:
                 senv_out.write(line)
+    os.rename(senv_tmp, senv_path)
 
 def write_aws_creds(aws_key, aws_secret, def_region='us-west-2'):
     with open('/root/.aws/credentials', 'w') as out:
