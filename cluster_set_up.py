@@ -1,6 +1,11 @@
-'''This script should be run on a PREDICTD spark cluster master node just after 
-the cluster is initialized and the user has run the 'aws configure' command to
-supply their S3 credentials.
+'''After a Spark cluster has been set up with the `spark-ec2` command, 
+there are still a few configuration steps that are necessary for PREDICTD 
+to function well. This script automates the configuration of the `aws` 
+command line utility to use the correct access key and secret access key 
+for the user's S3 account, the modification of the Spark configuration to 
+match the available resources of the slave node and the location of the 
+Spark output directory, and propagating these configuration changes to the 
+slave node(s).
 '''
 import argparse
 import os
@@ -58,10 +63,10 @@ def copy_dirs_and_restart_spark():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--aws_access_key')
-    parser.add_argument('--aws_secret_access_key')
-    parser.add_argument('--default_region', default='us-west-2')
-    parser.add_argument('--slave_type', default='r3.8.xlarge')
+    parser.add_argument('--aws_access_key', help='The access key for the user\'s AWS account. This enables PREDICTD scripts to read and write to the user\'s S3 account.')
+    parser.add_argument('--aws_secret_access_key', help='The secret access key for the user\'s AWS account. This enables PREDICTD scripts to read and write to the user\'s S3 account.')
+    parser.add_argument('--default_region', default='us-west-2', help='The default region for the aws command line utility to use. [default: %(default)s]')
+    parser.add_argument('--slave_type', default='r3.8xlarge', help='The name of the instance type used as the slave node(s) on the Spark cluster. Allowable instance types are: r3.8xlarge, r4.8xlarge, and x1.16xlarge. [default: %(default)s]')
     args = parser.parse_args()
 
     set_up_spark_defaults(args.slave_type)

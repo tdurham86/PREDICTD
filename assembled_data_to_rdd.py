@@ -1,3 +1,6 @@
+'''
+After the assembled data has been uploaded to S3, the final step before it can be used for training a PREDICTD model is to convert the bedgraph file into a Spark Resilient Distributed Dataset (RDD) so that it can be read in by Apache Spark and distributed across the cluster. This script reads in each line of the assembled data, creates a compressed sparse row matrix representation of it with `scipy.sparse.csr_matrix`, transforms the data values using the inverse hyperbolic sine function for variance stabilization, and adds this matrix to the RDD keyed by the chromosome and start coordinate of the corresponding genomic window.
+'''
 
 import argparse
 import numpy
@@ -65,7 +68,7 @@ def read_in_part(part_url, data_shape, col_coords, coords_bed=None, tmpdir='/dat
             line = line.strip().split()
             try:
                 part_data.append(((line[0], int(line[1])),
-                                  line_to_data(line[-1], data_shape, col_coords)))
+                                  line_to_data(line[-1], data_shape, col_coords, arcsinh=True)))
             except NoDataException:
                 pass
             except ValueError as err:
@@ -78,10 +81,10 @@ def read_in_part(part_url, data_shape, col_coords, coords_bed=None, tmpdir='/dat
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_parts_url_base')
-    parser.add_argument('--coords_bed', help='A bed file describing the subset of regions that should be included in the RDD for training the model. Typically this will be about 1% of the genome (e.g. the ENCODE Pilot Regions), and each model will train on on a random 10% of this subset. [default: %default]', default='s3://encodeimputation-alldata/25bp/hars_with_encodePilots.25bp.windows.bed.gz')
+    parser.add_argument('--data_parts_url_base', help='The S3 URI of the base name for the parts of the uploaded assembled bedgraph.')
+    parser.add_argument('--coords_bed', help='A bed file describing the subset of regions that should be included in the RDD for training the model. Typically this will be about 1%% of the genome (e.g. the ENCODE Pilot Regions), and each model will train on on a random 10%% of this subset. [default: %(default)s]', default='s3://encodeimputation-alldata/25bp/hars_with_encodePilots.25bp.windows.bed.gz')
 #    parser.add_argument('--random_frac', type=float)
-    parser.add_argument('--out_url')
+    parser.add_argument('--out_url', help='The S3 URI to which the RDD should be written. This is the URI that will be used to refer to this RDD when running the PREDICTD model.')
 #    parser.add_argument('--data_shape', default='1,24')
     args = parser.parse_args()
 

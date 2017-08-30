@@ -1,4 +1,7 @@
-'''use Bill's code from bin/split-matrix-uniformly.py to chunk total experiment set into 5 folds, then do the same within each fold to get a set of validation folds.
+'''
+PREDICTD requires the data to be split into training, validation, and test sets. This script will take a matrix of experiments in the format of the `data_idx.pickle` file produced during data assembly, and it will try to split the available data sets across disjoint sets such that each set has balanced representation of all cell types and assays. This helps to ensure that there are not certain test sets that contain a disproportionate number of examples of a particular cell type or assay.
+
+Note: Bill Noble is the author of the original code to make these splits.
 '''
 
 import argparse
@@ -85,11 +88,11 @@ def trySplits(mat_coord_list, num_splits, num_tries):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('data_idx_url')
-    parser.add_argument('--test_fold_data_idx_url')
-    parser.add_argument('--num_test_folds', type=int, default=5)
-    parser.add_argument('--num_valid_folds', type=int, default=8)
-    parser.add_argument('--num_tries', type=int, default=1000)
+    parser.add_argument('data_idx_url', help='The S3 URI to a data_idx.pickle file listing the observed data sets in the cell type/assay plane of the tensor.')
+    parser.add_argument('--test_fold_data_idx_url', help='Optionally provide an S3 URI to another data_idx.pickle file to identify a particular subset of experiments that should be in the test set. If this option is provided then only one test set is generated, and any value specified for --num_test_folds is ignored.')
+    parser.add_argument('--num_test_folds', type=int, default=5, help='The number of test sets to generate. [default: %(default)s]')
+    parser.add_argument('--num_valid_folds', type=int, default=8, help='The number of validation sets to generate per test set. [default: %(default)s]')
+    parser.add_argument('--num_tries', type=int, default=10000, help='The number of splits to try when searching for the most balanced possible distribution of experiments across the requested number of test or validation sets. [default: %(default)s]')
     args = parser.parse_args()
 
     #a data_idx has been passed in that contains the information to generate a single

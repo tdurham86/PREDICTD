@@ -1,3 +1,7 @@
+'''
+The first step in assembling the tensor data structure for PREDICTD to model is to take the input data in [bedGraph](https://genome.ucsc.edu/goldenpath/help/bedgraph.html) format, bin the signal into 25 bp windows genome-wide, and then compile the value of each data file at each 25 bp window into a single bedgraph file. This large file is later read line-by-line to generate the tensor slices at each genomic window.
+'''
+
 import argparse
 import bz2
 import fnmatch
@@ -239,12 +243,12 @@ def write_to_proc(paths, out_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--file_map')
+    parser.add_argument('--file_map', help='A space-delimited file with three columns: 1) the S3 URI for a data file in bedgraph format, 2) the name of the cell type for this file, and 3) the name of the assay for this file.')
 #    parser.add_argument('--data_root')
-    parser.add_argument('--working_dir', default=os.getcwd())
-    parser.add_argument('--windows_file', default='s3://encodeimputation-alldata/25bp/hg19.25bp.windows.bed.gz')
+    parser.add_argument('--working_dir', default=os.getcwd(), help='The directory to which intermediate files should be written. Ensure that its storage capacity is about twice as large as the size of the total input data pointed to by the --file_map option. [default: %(default)s]')
+    parser.add_argument('--windows_file', default='s3://encodeimputation-alldata/25bp/hg19.25bp.windows.bed.gz', help='The S3 URI to a bed file containing the genomic windows on which PREDICTD will operate. [default: %(default)s]')
 #    parser.add_argument('--data_idx', default='s3://encodeimputation-alldata/25bp/data_idx.pickle')
-    parser.add_argument('--procnum', type=int, default=4)
+    parser.add_argument('--procnum', type=int, default=4, help='The number of bedgraph assembly jobs that should run in parallel. This number should generally be equal to the number of CPUs available on the host machine. [default: %(default)s]')
     args = parser.parse_args()
 
     print('Getting windows file.')
