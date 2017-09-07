@@ -1,4 +1,8 @@
 
+'''
+The results of PREDICTD are improved by averaging the imputed data from multiple models to produce a consensus imputed data track. This script will loop through a list of validation sets and train a model for each one so that the imputation results from multiple models can be averaged for a particular test set.
+'''
+
 import argparse
 import copy
 import numpy
@@ -10,7 +14,7 @@ sys.path.append(os.path.dirname(__file__))
 import s3_library
 #import azure_library
 #import impute_roadmap_consolidated_data as spark_model
-import impute_data as spark_model
+import train_model as spark_model
 spark_model.pl.s3_library = s3_library
 #spark_model.pl.azure_library = azure_library
 
@@ -50,7 +54,7 @@ if __name__ == "__main__":
         sc = spark_model.SparkContext(appName='avg_valid_folds',
                                       pyFiles=[os.path.join(os.path.dirname(__file__), 's3_library.py'),
                                                #os.path.join(os.path.dirname(__file__), 'impute_roadmap_consolidated_data.py'),
-                                               os.path.join(os.path.dirname(__file__), 'impute_data.py'),
+                                               os.path.join(os.path.dirname(__file__), 'train_model.py'),
                                                os.path.join(os.path.dirname(__file__), 'predictd_lib.py')])
         spark_model.pl.sc = sc
         if spark_model.pl.STORAGE == 'S3':
@@ -120,7 +124,7 @@ if __name__ == "__main__":
                                   pyFiles=[os.path.join(os.path.dirname(__file__), 's3_library.py'),
 #                                              os.path.join(os.path.dirname(__file__), 'azure_library.py'),
 #                                           os.path.join(os.path.dirname(__file__), 'impute_roadmap_consolidated_data.py'),
-                                           os.path.join(os.path.dirname(__file__), 'impute_data.py'),
+                                           os.path.join(os.path.dirname(__file__), 'train_model.py'),
                                            os.path.join(os.path.dirname(__file__), 'predictd_lib.py')])
     spark_model.pl.sc = sc
     if spark_model.pl.STORAGE == 'S3':

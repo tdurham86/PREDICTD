@@ -22,17 +22,28 @@ class ValCountException(Exception):
 class NoDataException(Exception):
     pass
 
+#def line_to_data(line_vals, data_shape, col_coords, arcsinh=True):
+#    data = numpy.zeros(data_shape)
+#    data_elts = numpy.array(line_vals.split('|'), dtype=float)
+#    if numpy.sum(data_elts) == 0:
+#        raise NoDataException()
+#    elif data_elts.shape[0] != len(col_coords[0]):
+#        raise ValCountException(data_elts, col_coords)
+#    if arcsinh is True:
+#        data_elts = numpy.arcsinh(data_elts)
+#    data[col_coords] = data_elts
+#    return sps.csr_matrix(data)
+
 def line_to_data(line_vals, data_shape, col_coords, arcsinh=True):
-    data = numpy.zeros(data_shape)
-    data_elts = numpy.array(line_vals.split('|'), dtype=float)
+    if arcsinh is True:
+        data_elts = numpy.arcsinh(numpy.array(line_vals.split('|'), dtype=float))
+    else:
+        data_elts = numpy.array(line_vals.split('|'), dtype=float) 
     if numpy.sum(data_elts) == 0:
         raise NoDataException()
-#    elif data_elts.shape[0] != 7:
-#        raise ValCountException(data_elts)
-    if arcsinh is True:
-        data_elts = numpy.arcsinh(data_elts)
-    data[col_coords] = data_elts
-    return sps.csr_matrix(data)
+    elif data_elts.shape[0] != len(col_coords[0]):
+        raise ValCountException(data_elts, col_coords)
+    return sps.csr_matrix((data_elts, col_coords), shape=data_shape)
 
 def read_in_part(part_url, data_shape, col_coords, coords_bed=None, tmpdir='/data/tmp'):
     part_data = []
@@ -52,11 +63,14 @@ def read_in_part(part_url, data_shape, col_coords, coords_bed=None, tmpdir='/dat
                 except:
 #                    os.remove(local_coords_bed)
                     raise
-            finally:
-                if os.path.isdir(local_coords_bed + '.lock'):
-                    os.rmdir(local_coords_bed + '.lock')
+                finally:
+                    if os.path.isdir(local_coords_bed + '.lock'):
+                        os.rmdir(local_coords_bed + '.lock')
         #extract the relevant data from the part_url passed in
-        read_lines_path = os.path.join(os.path.dirname(__file__), 'read_file_lines.py')
+        if os.path.dirname(__file__):
+            read_lines_path = os.path.join(os.path.dirname(__file__), 'read_file_lines.py')
+        else:
+            read_lines_path = os.path.join(os.getcwd(), 'read_file_lines.py')
         bedtools, read_lines = local['bedtools'], local[read_lines_path]
         extract_regions = (read_lines[part_url] | bedtools['intersect', '-a', 'stdin', '-b', local_coords_bed, '-wa'])
         p = extract_regions.popen()
@@ -75,8 +89,8 @@ def read_in_part(part_url, data_shape, col_coords, coords_bed=None, tmpdir='/dat
                 raise Exception(line, data_shape, col_coords, err)
 #            if len(part_data) == int(1e5):
 #                break
-##            except ValCountException as err:
-##                raise Exception((part_url,) + err.args)
+            except ValCountException as err:
+                raise Exception((part_url,) + err.args)
     return part_data
 
 if __name__ == "__main__":

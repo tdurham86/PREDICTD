@@ -974,6 +974,7 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         corrected_genome_m2 = genome_m2/(1 - (beta2 ** genome_t))
         genome_m1_bar = ((1 - beta1_genome) * grad_hat) + (beta1_genome_next * corrected_genome_m1)
         genome -= working_genome_lrate * (genome_m1_bar/(numpy.sqrt(corrected_genome_m2) + epsilon))
+        genome[numpy.where(genome < 0)] = 0
 
         #update genome_bias
         grad = error + (genome_bias_rcoef * genome_bias)
@@ -983,12 +984,14 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         genome_bias_m2 = beta2 * genome_bias_m2 + (1 - beta2) * (grad ** 2)
         corrected_genome_bias_m2 = genome_bias_m2/(1 - (beta2 ** genome_t))
         genome_bias_m1_bar = ((1 - beta1_genome) * grad_hat) + (beta1_genome_next * corrected_genome_bias_m1)
-        genome_bias -= working_genome_lrate * (genome_bias_m1_bar/(numpy.sqrt(corrected_genome_bias_m2) + epsilon))
+        genome_bias = max(genome_bias - (working_genome_lrate * (genome_bias_m1_bar/(numpy.sqrt(corrected_genome_bias_m2) + epsilon))), 0)
 
         assay[a_coord,:] -= updates['assay']
-        assay_bias[a_coord] -= updates['assay_bias']
+        assay[a_coord, numpy.where(assay[a_coord,:] < 0)[0]] = 0
+        assay_bias[a_coord] = max(assay_bias[a_coord] - updates['assay_bias'], 0)
         ct[c_coord,:] -= updates['ct']
-        ct_bias[c_coord] -= updates['ct_bias']
+        ct[c_coord, numpy.where(ct[c_coord,:] < 0)[0]] = 0
+        ct_bias[c_coord] = max(ct_bias[c_coord] - updates['ct_bias'], 0)
         partition_data[sample_idx] = (g_idx, data_elt, genome, genome_bias, genome_m1, genome_m2, genome_t, genome_bias_m1, genome_bias_m2) + partition_data[sample_idx][9:]
 
         data_points_count += 1
@@ -1354,6 +1357,7 @@ def sgd_genome_only(pidx, pdata, ct, ct_bias, assay, assay_bias, genome_rcoef, g
         corrected_genome_m2 = genome_m2_array[i_coord]/(1 - (beta2 ** genome_t_array[i_coord]))
         genome_m1_bar = ((1 - beta1_genome) * grad_hat) + (beta1_genome_next * corrected_genome_m1)
         genome_array[i_coord,:] -= working_genome_lrate * (genome_m1_bar/(numpy.sqrt(corrected_genome_m2) + epsilon))
+        genome_array[i_coord, numpy.where(genome_array[i_coord,:] < 0)[0]] = 0
 
         #update genome_bias
         grad = error + (genome_bias_rcoef * genome_bias_array[i_coord])
@@ -1363,7 +1367,8 @@ def sgd_genome_only(pidx, pdata, ct, ct_bias, assay, assay_bias, genome_rcoef, g
         genome_bias_m2_array[i_coord] = beta2 * genome_bias_m2_array[i_coord] + (1 - beta2) * (grad ** 2)
         corrected_genome_bias_m2 = genome_bias_m2_array[i_coord]/(1 - (beta2 ** genome_t_array[i_coord]))
         genome_bias_m1_bar = ((1 - beta1_genome) * grad_hat) + (beta1_genome_next * corrected_genome_bias_m1)
-        genome_bias_array[i_coord] -= working_genome_lrate * (genome_bias_m1_bar/(numpy.sqrt(corrected_genome_bias_m2) + epsilon))
+        genome_bias_update = working_genome_lrate * (genome_bias_m1_bar/(numpy.sqrt(corrected_genome_bias_m2) + epsilon))
+        genome_bias_array[i_coord] = max(genome_bias_array[i_coord] - genome_bias_update, 0)
 
         data_points_count += 1
 
@@ -1772,8 +1777,9 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                                'assay_t':assay_t.copy(), 'min_checkpoint':cur_checkpoint}
             #collecting data for a smarter stopping criterion based on detecting
             #convergence
-            if ((max_iters and len(iter_errs) > max_iters) or
-                (len(iter_errs) - min_factors['min_idx']) > (2 * win_size + win_spacing)):
+            if ((min_iters and len(iter_errs) > min_iters) and 
+                ((max_iters and len(iter_errs) > max_iters) or
+                 (len(iter_errs) - min_factors['min_idx']) > (2 * win_size + win_spacing))):
                 break
             if ((not min_iters or len(iter_errs) > min_iters) and
                 len(iter_errs) - min_factors['min_idx'] > win_size):
@@ -2344,7 +2350,7 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
             bdg_paths = sorted(glob.glob(bdg_glob))
             if not bdg_paths:
                 continue
-            #if option is set, sort the coordinates here instead of during imputation
+            #if option is set, sort the coordinates here instead of during imputation 
             #(unix sort might be faster than RDD sort if only a few bigWigs are being produced)
             if sort_bdg is True:
                 local.env['LC_ALL'] = 'C'
@@ -2354,7 +2360,7 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
                 unixcat, unixpaste, bedtools = local['cat'], local['paste'], local['bedtools']
                 chain = unixcat[bdg_paths] | unixpaste[os.path.join(tmpdir, 'bdg_coords.txt'), '-'] | bedtools['intersect', '-wa', '-a', 'stdin', '-b', chrom_bed_path, '-f', '1.0'] > out_bdg
             chain()
-
+            
             out_bw = os.path.splitext(out_bdg)[0] + '.bw'
             bedGraphToBigWig = local['bedGraphToBigWig']
             bedGraphToBigWig(out_bdg, chrom_sizes_path, out_bw)

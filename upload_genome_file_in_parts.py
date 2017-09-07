@@ -1,4 +1,8 @@
 
+'''
+Once the input data files are assembled into a single bedGraph file, that bedGraph file must be uploaded to S3 storage for access by the cluster. This file can be very large and ungainly, and so it is split up into parts of approximately equal size to make it more manageable. Each part shares the same root name that is appended with an index number to distinguish one from another. In addition, a `data_idx.pickle` file is generated for the data. This file maps cell type/assay pairs with input data to coordinates in the tensor. It contains a Python `dict` that maps experiment names to tuples of information about the experiment. The critical indices of these tuples are the first, second, and last, which contain the cell type name of that experiment, the assay name, and the *(x,y)* coordinate of that experiment in the cell type by assay plane of the tensor, respectively.
+'''
+
 import argparse
 import glob
 import gzip
@@ -31,8 +35,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_bdg', help='Local gzipped bedgraph file that is the '
                         'output of assemble_new_ct_datasets.py')
-    parser.add_argument('--out_url_base', default='s3://encodeimputation-alldata/25bp/alldata-parts/alldata')
-    parser.add_argument('--lines_per_file', type=int, default=1000000)
+    parser.add_argument('--out_url_base', default='s3://encodeimputation-alldata/25bp/alldata-parts/alldata', help='The root S3 URI (including the root of the file basename) to which the assembled data parts should be written.')
+    parser.add_argument('--lines_per_file', type=int, default=1000000, help='The number of lines from the assembled data that should be put into a single uploaded part. This controls the number of parts and their size. [default: %(default)s]')
     args = parser.parse_args()
 
     part_no = 0

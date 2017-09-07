@@ -1,5 +1,9 @@
 #! /usr/bin/env python
 
+'''
+After a model is trained, it can be useful to calculate different quality measures, particularly on held out test set data, to assess how well the imputation performed. This script will take in observed and imputed data and calculate the quality measures used in the PREDICTD publication on the ENCODE Pilot Regions and, optionally, also the non-coding human accelerated regions. Note that the peak recovery measure, CatchPeakObs, can currently only be calculated for Roadmap Epigenomics experiments because it must have a called peaks file to refer to.
+'''
+
 import argparse
 import glob
 import gzip
@@ -134,17 +138,17 @@ def get_data(parts_glob, working_dir, num_procs, save_to_disk=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('data_glob')
-    parser.add_argument('imputed_glob')
-    parser.add_argument('--alternative_imputed')
-    parser.add_argument('--data_idx_url', default='s3://encodeimputation-alldata/25bp/data_idx.pickle')
-    parser.add_argument('--working_dir', default='/dev/peak_pr')
-    parser.add_argument('--fold_idx', type=int, default=0)
-    parser.add_argument('--valid_fold_idx', type=int, default=0)
-    parser.add_argument('--fold_name', default='folds.5.pickle')
-    parser.add_argument('--out_name')
-    parser.add_argument('--num_procs', type=int, default=1)
-    parser.add_argument('--only_encodePilots', action='store_true', default=False)
+    parser.add_argument('data_glob', help='The S3 URI to the observed data RDD parts, with appropriate Unix wildcard characters to specify all RDD parts in one string.')
+    parser.add_argument('imputed_glob', help='The S3 URI to the imputed data RDD parts, with appropriate Unix wildcard characters to specify all RDD parts in one string.')
+    parser.add_argument('--alternative_imputed', help='In the case of three-way comparisons, specify S3 URI to parts of another imputed or observed data RDD, with appropriate Unix wildcard characters to specify all RDD parts in one string.')
+    parser.add_argument('--data_idx_url', default='s3://encodeimputation-alldata/25bp/data_idx.pickle', help='S3 URI to the data_idx.pickle file for these imputed/observed data. [default: %(default)s]')
+    parser.add_argument('--working_dir', default='/data/peak_pr', help='The local directory to use as a workspace for computing the quality measures. [default: %(default)s]')
+    parser.add_argument('--fold_idx', type=int, default=0, help='The index of the test set specifying the experiments on which the quality measures should be calculated. [default: %(default)s]')
+#    parser.add_argument('--valid_fold_idx', type=int, default=0, help='The index of the validation set corresponding to the training set to use for ')
+    parser.add_argument('--fold_name', default='folds.5.8.pickle', help='The basename of the file specifying the test subsets to use. [default: %(default)s]')
+    parser.add_argument('--out_name', help='The base filename for the quality measures output. [default: \'metrics_fold{!s}.out\'.format(args.fold_idx)]')
+    parser.add_argument('--num_procs', type=int, default=1, help='The number of processes to use when reading in the observed and imputed data. If multiple cores are available, setting this option > 1 can speed up data loading. [default: %(default)s]')
+    parser.add_argument('--only_encodePilots', action='store_true', default=False, help='If set, calculate quality measures only over the ENCODE Pilot Regions, even if the RDD elements include the non-coding human accelerated regions as well.')
     args = parser.parse_args()
 
     data_idx_bucket, data_idx_key = s3_library.parse_s3_url(args.data_idx_url)
@@ -156,17 +160,18 @@ if __name__ == "__main__":
         subsets_key = os.path.join(os.path.dirname(data_idx_key), args.fold_name)
     if s3_library.S3.get_bucket(subsets_bucket).get_key(subsets_key):
         subsets = s3_library.get_pickle_s3(data_idx_bucket, subsets_key)[args.fold_idx]
-        subsets_dict = {}
-        if isinstance(subsets, dict):
-            if isinstance(subsets['train'], list):
-                subsets['valid'] = subsets['train'][args.valid_fold_idx]['valid']
-                subsets['train'] = subsets['train'][args.valid_fold_idx]['train']
-        else:
-            subsets_dict['test'] = subsets['train'][args.valid_fold_idx][2]
-            subsets_dict['valid'] = subsets['train'][args.valid_fold_idx][1]
-            subsets_dict['train'] = subsets['train'][args.valid_fold_idx][0]
-    else:
-        subsets = None
+#        subsets_dict = {}
+#        if isinstance(subsets, dict):
+#            if isinstance(subsets['train'], list):
+#                subsets['valid'] = subsets['train'][args.valid_fold_idx]['valid']
+#                subsets['train'] = subsets['train'][args.valid_fold_idx]['train']
+#        else:
+#            subsets_dict['test'] = subsets['train'][args.valid_fold_idx][2]
+#            subsets_dict['valid'] = subsets['train'][args.valid_fold_idx][1]
+#            subsets_dict['train'] = subsets['train'][args.valid_fold_idx][0]
+#            subsets = subsets_dict
+#    else:
+#        subsets = None
 #    data_idx = s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/data_idx.pickle')
 #    subsets = s3_library.get_pickle_s3('encodeimputation-alldata', os.path.join('25bp',args.fold_name))[args.fold_idx]
 
@@ -209,7 +214,7 @@ if __name__ == "__main__":
         if subsets is None:
             col_idx = (elt[-1][0] * 24) + elt[-1][1]
         else:
-            col_idx = (elt[-1][0] * subsets['train'].shape[1]) + elt[-1][1]
+            col_idx = (elt[-1][0] * subsets['test'].shape[1]) + elt[-1][1]
         if subsets is not None and args.fold_idx >= 0 and subsets['test'][elt[-1]]:
             continue
         elif col_idx not in cols_w_data:
