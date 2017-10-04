@@ -27,8 +27,13 @@ def main(job_id, params):
     args.ra = numpy.exp(params['ra'][0])
     args.ri = numpy.exp(params['ri'][0])
     args.ri2 = numpy.exp(params['ri2'][0])
-    args.out_root = os.path.join(args.out_root, 'hypersearch_{!s}'.format(job_id))
-    args.factor_init_seed = numpy.random.randint(int(1e6))
+    args.out_root = os.path.join(args.out_root, 'hypersearch_{:05}'.format(job_id))
+
+    #randomly pick the data subsets to use
+    rs = numpy.random.RandomState(args.factor_init_seed + int(job_id))
+    args.fold_idx = rs.randint(5)
+    args.valid_fold_idx = rs.randint(8)
+    args.factor_init_seed = rs.randint(int(1e6))
 
     if args.data_url.startswith('s3'):
         bucket = s3_library.S3.get_bucket(args.run_bucket)
