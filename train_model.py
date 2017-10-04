@@ -105,6 +105,7 @@ def train_consolidated(args):
         
         coords_to_output = list(zip(*itertools.product((ct_list.index('H1_Cell_Line'),), numpy.arange(len(assay_list)))))
         pl.write_bigwigs2(genome_total.repartition(120), ct, ct_bias, assay, assay_bias, gmean, ct_list, assay_list, args.run_bucket, args.out_root, sinh=not args.no_bw_sinh, coords=coords_to_output)
+    return final_mse[pl.MSE_VALID]
 
 
 parser = argparse.ArgumentParser()
@@ -151,7 +152,7 @@ parser.add_argument('--iters_per_mse', type=int, default=3, help='The number of 
 #                    'to be most helpful in the early part of training, so this parameter '
 #                    'provides the number of iterations to allow genome catch up before '
 #                    'just running normal parallel SGD.')
-parser.add_argument('--lrate_search_num', type=int, help='When model convergence is detected, if this parameter is greater than zero, training will continue with --learning_rate = 0.5 * --learning_rate and --beta1 = --beta1 - (1.0 - --beta1), and --lrate_search_num will be decremented by 1. [default: %(default)s]')
+parser.add_argument('--lrate_search_num', type=int, default=3, help='When model convergence is detected, if this parameter is greater than zero, training will continue with --learning_rate = 0.5 * --learning_rate and --beta1 = --beta1 - (1.0 - --beta1), and --lrate_search_num will be decremented by 1. [default: %(default)s]')
 #parser.add_argument('--weighted_err', action='store_true', default=False)
 #parser.add_argument('--pctl_res', help='S3 url to data percentiles that have already been calculated.')
 #parser.add_argument('--no_arcsinh_transform', action='store_true', default=False)
