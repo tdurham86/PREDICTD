@@ -22,7 +22,7 @@ except OSError:
     TMPDIR = os.getcwd()
 
 #set up S3 environment variables
-creds_path = '/root/.aws/credentials'
+creds_path = os.path.join(os.path.expanduser('~'), '.aws/credentials')
 if os.path.isfile(creds_path):
     with open(creds_path) as creds_in:
         creds_dict = dict([elt.strip().split(' = ') for elt in creds_in if ' = ' in elt])
