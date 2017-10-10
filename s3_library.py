@@ -68,11 +68,20 @@ def glob_keys(bucketname, glob_str):
     '''Query keys for the specified bucket and return keys with 
     names matching the glob string.
     '''
-    globbed = []
     bucket = S3.get_bucket(bucketname)
-    for key in bucket.list():
-        if fnmatch.fnmatch(key.name, glob_str):
-            globbed.append(key)
+    path_levels = glob_str.split('/')
+    return glob_keys_helper(bucket.list(prefix=path_levels[0], delimiter='/'), path_levels, 0)
+
+def glob_keys_helper(prefixes, glob_levels, level_idx):
+    globbed = []
+    for elt in prefixes:
+        if fnmatch.fnmatch(elt.name.rstrip('/'), '/'.join(glob_levels[:level_idx + 1]).rstrip('/')):
+            if level_idx + 1 == len(glob_levels):
+                globbed.append(elt.bucket.get_key(elt.name))
+            else:
+                globbed.extend(glob_keys_helper(elt.bucket.list(prefix=elt.name, delimiter='/'), 
+                                                glob_levels, 
+                                                level_idx + 1))
     return globbed
 
 def glob_buckets(glob_str):
