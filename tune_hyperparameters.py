@@ -22,11 +22,17 @@ def main(job_id, params):
     #set the hyperparameters for this model training
     with open(os.path.join(TMPDIR, 'root_params.pickle'), 'rb') as pickle_in:
         args = pickle.load(pickle_in)
-    args.learning_rate = numpy.exp(params['learning_rate'][0])
-    args.rc = numpy.exp(params['rc'][0])
-    args.ra = numpy.exp(params['ra'][0])
-    args.ri = numpy.exp(params['ri'][0])
-    args.ri2 = numpy.exp(params['ri2'][0])
+    for key in params:
+        key_parsed = key.split('zzz')
+        if key_parsed[-1] == 'exp':
+            setattr(args, key_parsed[0], numpy.exp(params[key][0]))
+        else:
+            setattr(args, key_parsed[0], params[key][0])
+#    args.learning_rate = numpy.exp(params['learning_rate'][0])
+#    args.rc = numpy.exp(params['rc'][0])
+#    args.ra = numpy.exp(params['ra'][0])
+#    args.ri = numpy.exp(params['ri'][0])
+#    args.ri2 = numpy.exp(params['ri2'][0])
     args.out_root = os.path.join(args.out_root, 'hypersearch_{:05}'.format(job_id))
 
     #randomly pick the data subsets to use

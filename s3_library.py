@@ -77,7 +77,9 @@ def glob_keys_helper(prefixes, glob_levels, level_idx):
     for elt in prefixes:
         if fnmatch.fnmatch(elt.name.rstrip('/'), '/'.join(glob_levels[:level_idx + 1]).rstrip('/')):
             if level_idx + 1 == len(glob_levels):
-                globbed.append(elt.bucket.get_key(elt.name))
+                key = elt.bucket.get_key(elt.name)
+                if key:
+                    globbed.append(key)
             else:
                 globbed.extend(glob_keys_helper(elt.bucket.list(prefix=elt.name, delimiter='/'), 
                                                 glob_levels, 

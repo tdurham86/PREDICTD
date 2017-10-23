@@ -1559,7 +1559,7 @@ def subtract_from_csr(csr, val):
     csr.data -= val
     return csr
 
-def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, run_bucket, out_root, iters_per_mse, batch_size, win_size, win_spacing, win2_shift, pval, lrate_search_num, beta1=0.9, beta2=0.999, epsilon=1e-8, init_seed=1, restart=False, suppress_output=False, min_iters=None, max_iters=None, checkpoint_interval=80, record_param_dist=None, checkpoint=None, subsets=None):
+def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, run_bucket, out_root, iters_per_mse, batch_size, win_size, win_spacing, win2_shift, pval, lrate_search_num, beta1=0.9, beta2=0.999, epsilon=1e-8, init_seed=1, restart=False, suppress_output=False, min_iters=None, max_iters=None, checkpoint_interval=80, record_param_dist=None, checkpoint=None, subsets=None, burn_in_epochs=0.5):
     '''Run training iterations for the 3D additive model.
     '''
     #set checkpoint dir
@@ -1634,7 +1634,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
         burn_in = gtotal.sample(False, sample_frac, init_seed).repartition(1).persist()
         burn_in_count = burn_in.count()
         print('Burn in locus count: {!s}'.format(burn_in_count))
-        burn_in_epochs = 0.5
+#        burn_in_epochs = 0.5
         if subsets is None:
             burn_in_batch_size = burn_in_epochs * burn_in.map(lambda x: numpy.sum(~x[-1][SUBSET_TRAIN]) if x[-1] is not None else len(x[1].nonzero()[0])).sum()
         else:

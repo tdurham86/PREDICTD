@@ -70,7 +70,7 @@ def train_consolidated(args):
     #train factors with parallel SGD 
     print('Train PREDICTD')
     iseed = rs.randint(0, int(1e8))
-    gtotal, ct, ct_bias, assay, assay_bias, iter_errs = pl.train_predictd(gtotal_init, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, args.run_bucket, args.out_root, args.iters_per_mse, args.batch_size, args.stop_winsize, args.stop_winspacing, args.stop_win2shift, args.stop_pval, args.lrate_search_num, init_seed=iseed, min_iters=args.min_iters, max_iters=args.max_iters, subsets=subsets)
+    gtotal, ct, ct_bias, assay, assay_bias, iter_errs = pl.train_predictd(gtotal_init, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, args.run_bucket, args.out_root, args.iters_per_mse, args.batch_size, args.stop_winsize, args.stop_winspacing, args.stop_win2shift, args.stop_pval, args.lrate_search_num, init_seed=iseed, min_iters=args.min_iters, max_iters=args.max_iters, subsets=subsets, burn_in_epochs=args.burn_in_epochs)
 
     #train genome factors across whole genome
     print('Apply new cell type parameters across genome.')
@@ -96,6 +96,12 @@ def train_consolidated(args):
     hyperparameters = {'args':args, 'subsets':subsets}
     pl.save_model_to_s3(gmean, ct, ct_bias, assay, assay_bias, genome_total, iter_errs, hyperparameters, 
                         args.run_bucket, args.out_root, iter_errs_header_line='Iter\tObjective\tTrain\tValid\n')
+
+    #remove checkpoint dir
+    checkpoint_keys = s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'checkpoints/*'))
+    for key in checkpoint_keys:
+        if key:
+            key.delete()
 
     #make browser view of H1 cell line tracks
     if args.no_browser_tracks is False:
@@ -153,6 +159,7 @@ parser.add_argument('--iters_per_mse', type=int, default=3, help='The number of 
 #                    'provides the number of iterations to allow genome catch up before '
 #                    'just running normal parallel SGD.')
 parser.add_argument('--lrate_search_num', type=int, default=3, help='When model convergence is detected, if this parameter is greater than zero, training will continue with --learning_rate = 0.5 * --learning_rate and --beta1 = --beta1 - (1.0 - --beta1), and --lrate_search_num will be decremented by 1. [default: %(default)s]')
+parser.add_argument('--burn_in_epochs', type=float, default=0.5, help='After the model chooses a random subset of 8000 genomic locations for burning in the model, this parameter controls how many times through the available training data in that subset the model will pass during the burn in stochastic gradient descent updates. [default: %(default)s]')
 #parser.add_argument('--weighted_err', action='store_true', default=False)
 #parser.add_argument('--pctl_res', help='S3 url to data percentiles that have already been calculated.')
 #parser.add_argument('--no_arcsinh_transform', action='store_true', default=False)
