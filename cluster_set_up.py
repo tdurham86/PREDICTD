@@ -37,6 +37,8 @@ def set_up_spark_env():
     os.rename(senv_tmp, senv_path)
 
 def write_aws_creds(aws_key, aws_secret, def_region='us-west-2'):
+    if not os.path.isdir('/root/.aws'):
+        os.makedirs('/root/.aws')
     with open('/root/.aws/credentials', 'w') as out:
         out.write('[default]\n')
         out.write('aws_access_key_id = {!s}\n'.format(aws_key))

@@ -64,26 +64,29 @@ def set_pickle_s3(bucketname, keyname, obj):
         tmp.seek(0)
         key.set_contents_from_file(tmp, headers={'x-amz-request-payer':'requester'})
 
-def glob_keys(bucketname, glob_str):
+def glob_keys(bucketname, glob_str, just_names=False):
     '''Query keys for the specified bucket and return keys with 
     names matching the glob string.
     '''
     bucket = S3.get_bucket(bucketname)
     path_levels = glob_str.split('/')
-    return glob_keys_helper(bucket.list(prefix=path_levels[0], delimiter='/'), path_levels, 0)
+    return glob_keys_helper(bucket.list(prefix=path_levels[0], delimiter='/'), path_levels, 0, just_names=just_names)
 
-def glob_keys_helper(prefixes, glob_levels, level_idx):
+def glob_keys_helper(prefixes, glob_levels, level_idx, just_names=False):
     globbed = []
     for elt in prefixes:
         if fnmatch.fnmatch(elt.name.rstrip('/'), '/'.join(glob_levels[:level_idx + 1]).rstrip('/')):
             if level_idx + 1 == len(glob_levels):
-                key = elt.bucket.get_key(elt.name)
+                if just_names is True:
+                    key = elt.name
+                else:
+                    key = elt.bucket.get_key(elt.name)
                 if key:
                     globbed.append(key)
             else:
                 globbed.extend(glob_keys_helper(elt.bucket.list(prefix=elt.name, delimiter='/'), 
                                                 glob_levels, 
-                                                level_idx + 1))
+                                                level_idx + 1, just_names=just_names))
     return globbed
 
 def glob_buckets(glob_str):

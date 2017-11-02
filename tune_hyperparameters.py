@@ -42,6 +42,7 @@ def main(job_id, params):
     args.factor_init_seed = rs.randint(int(1e6))
 
     if args.data_url.startswith('s3'):
+        #write command line to S3
         bucket = s3_library.S3.get_bucket(args.run_bucket)
         key = bucket.new_key(os.path.join(args.out_root, 'command_line.txt'))
         to_write = [os.path.join(os.path.dirname(__file__), 'train_model.py')]
@@ -68,12 +69,16 @@ if __name__ == "__main__":
     parser.add_argument('--spearmint_config_path', help='The path to the file containing the configuration parameters for this Spearmint run.')
     args = parser.parse_args()
 
-    #save the command line to S3
+    #record run in S3
     if args.data_url.startswith('s3'):
         if not s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'command_line.txt')):
+            #save the command line to S3
             bucket = s3_library.S3.get_bucket(args.run_bucket)
             key = bucket.new_key(os.path.join(args.out_root, 'command_line.txt'))
             key.set_contents_from_string(' '.join(sys.argv) + '\n', headers={'x-amz-request-payer':'requester'})
+            #save the spearmint config file to S3
+            key = bucket.new_key(os.path.join(args.out_root, 'config.json'))
+            key.set_contents_from_filename(args.spearmint_config_path)
         elif not args.restart:
             raise Exception('Error: Output directory already exists.')
 

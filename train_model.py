@@ -5,6 +5,7 @@ import numpy
 import os
 from pyspark import SparkContext, StorageLevel
 import scipy.sparse as sps
+import subprocess
 import sys
 
 sys.path.append(os.path.dirname(__file__))
@@ -54,7 +55,7 @@ def train_consolidated(args):
     data2 = data.mapValues(lambda x: pl.subtract_from_csr(x, gmean)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     ct, ct_bias, assay, assay_bias, genome, genome_bias = pl.init_factors(data2, subsets[pl.SUBSET_TRAIN], args.latent_factors, init_seed=rs.randint(0,int(1e8)), uniform_bounds=(-0.33, 0.33))
     gtotal_all = data2.join(genome.join(genome_bias)).map(lambda (idx, (d, (g, gb))): (idx, d, g, gb, None)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
-    gtotal_all.count()
+    num_all = gtotal_all.count()
     data.unpersist()
     del(data)
     genome.unpersist()
@@ -64,13 +65,25 @@ def train_consolidated(args):
 
 #    gtotal_init = gtotal_all.sample(False, args.training_fraction, args.training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     training_fraction_seed = rs.randint(0, int(1e8))
-    gtotal_init = gtotal_all.sample(False, args.training_fraction, training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
-    gtotal_init.count()
-    
+    num_to_select = num_all * args.training_fraction
+    num_slices = max(int(numpy.floor(num_to_select/args.win_per_slice)), 20)
+    if args.calc_valid_on_diff_loci is True:
+        gtotal_select = gtotal_all.sample(False, min(args.training_fraction * 2, 1.0), training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_init_size = int(gtotal_select.count()/2)
+        gtotal_init = gtotal_select.zipWithIndex().filter(lambda x: x[1] < gtotal_init_size).map(lambda x:x[0]).repartition(num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_init.count()
+        gtotal_valid = gtotal_select.zipWithIndex().filter(lambda x: x[1] >= gtotal_init_size).map(lambda x:x[0]).repartition(num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_valid.count()
+        gtotal_select.unpersist()
+        del(gtotal_select)
+    else:
+        gtotal_init = gtotal_all.sample(False, min(args.training_fraction, 1.0), training_fraction_seed).repartition(num_slices).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_valid = None
+
     #train factors with parallel SGD 
     print('Train PREDICTD')
     iseed = rs.randint(0, int(1e8))
-    gtotal, ct, ct_bias, assay, assay_bias, iter_errs = pl.train_predictd(gtotal_init, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, args.run_bucket, args.out_root, args.iters_per_mse, args.batch_size, args.stop_winsize, args.stop_winspacing, args.stop_win2shift, args.stop_pval, args.lrate_search_num, init_seed=iseed, min_iters=args.min_iters, max_iters=args.max_iters, subsets=subsets, burn_in_epochs=args.burn_in_epochs)
+    gtotal, ct, ct_bias, assay, assay_bias, iter_errs = pl.train_predictd(gtotal_init, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, args.run_bucket, args.out_root, args.iters_per_mse, args.batch_size, args.stop_winsize, args.stop_winspacing, args.stop_win2shift, args.stop_pval, args.lrate_search_num, init_seed=iseed, min_iters=args.min_iters, max_iters=args.max_iters, subsets=subsets, burn_in_epochs=args.burn_in_epochs, gtotal_valid=gtotal_valid, ri2=args.ri2)
 
     #train genome factors across whole genome
     print('Apply new cell type parameters across genome.')
@@ -98,10 +111,13 @@ def train_consolidated(args):
                         args.run_bucket, args.out_root, iter_errs_header_line='Iter\tObjective\tTrain\tValid\n')
 
     #remove checkpoint dir
-    checkpoint_keys = s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'checkpoints/*'))
-    for key in checkpoint_keys:
-        if key:
-            key.delete()
+#    checkpoint_keys = s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'checkpoints/*'))
+#    for key in checkpoint_keys:
+#        if key:
+#            key.delete()
+    checkpoints_url = 's3://{!s}/{!s}'.format(args.run_bucket, os.path.join(args.out_root, 'checkpoints/'))
+    cmd = ['aws', 's3', 'rm', checkpoints_url, '--recursive']
+    subprocess.check_call(cmd)
 
     #make browser view of H1 cell line tracks
     if args.no_browser_tracks is False:
@@ -177,6 +193,7 @@ parser.add_argument('--no_bw_sinh', default=False, action='store_true', help='If
 parser.add_argument('--training_fraction', type=float, default=0.01, help='The fraction of genomic positions in the RDD tensor to use for model training. Smaller values will result in fewer slices of the tensor to train at each parallel SGD iteration, and will speed up model training as long as the number of slices exceeds the number of available cores. [default: %(default)s]')
 #parser.add_argument('--training_fraction_seed', type=int, default=55)
 parser.add_argument('--no_browser_tracks', action='store_true', default=False, help='If set, do not output any tracks of imputed data after training. Useful if one is training multiple models with the goal of averaging their results or if one is only interested in whole genome imputed tracks and plans to run the impute_data.py script after model training.')
+parser.add_argument('--calc_valid_on_diff_loci', action='store_true', default=False, help='If set, then during the parallel stochastic gradient descent iterations the validation and test set mean squared error will be calculated on a different set of genomic loci than the ones used for training the model.')
 
 if __name__ == "__main__":
     args = parser.parse_args()

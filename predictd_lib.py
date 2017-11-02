@@ -502,7 +502,9 @@ def calc_mse_gtotal_split(gtotal_train, gtotal_valid, ct, rc, ct_bias, rbc, assa
     #validation MSE
     accum = gtotal_valid.map(lambda x: _calc_mse_helper(x, ct_assay, ct_assay_bias, ri, rbi, subsets=subsets))
     accum_res = accum.reduce(lambda x,y: x + y)
-    mse += [numpy.divide(accum_res[0,0], accum_res[0,1]) ] + list(numpy.divide(accum_res[3:,0], accum_res[3:,1]).flatten())
+#I think this line was buggy and repeated the training MSE
+#    mse += [numpy.divide(accum_res[0,0], accum_res[0,1]) ] + list(numpy.divide(accum_res[3:,0], accum_res[3:,1]).flatten())
+    mse += list(numpy.divide(accum_res[3:,0], accum_res[3:,1]).flatten())
     #this is a list with first element objective value, second training mse, and the rest
     #are mse values for the other subsets (if provided)
     return mse
@@ -1483,9 +1485,16 @@ def load_checkpoint(checkpoint_url):
         url_min_gtotal = 's3://{!s}/{!s}'.format(bucket_txt, key_min_gtotal)
         min_factors_no_gtotal_key = os.path.join(key_dir, 'min_factors.{!s}.pickle'.format(min_idx))
         min_factors = s3_library.get_pickle_s3(bucket_txt, min_factors_no_gtotal_key)
-        min_factors['gtotal'] = load_saved_rdd(url_min_gtotal.replace('s3://', 's3n://')).persist()
+        min_factors['gtotal'] = load_saved_rdd(url_min_gtotal).persist()
         min_factors['gtotal'].count()
+        gtotal_valid_key = os.path.join(key_dir, 'gtotal_valid.rdd.pickle')
+        if s3_library.glob_keys(bucket_txt, gtotal_valid_key + '*'):
+            url_gtotal_valid = 's3://{!s}/{!s}'.format(bucket_txt, gtotal_valid_key)
+            gtotal_valid = load_saved_rdd(url_gtotal_valid).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        else:
+            gtotal_valid = None
     elif STORAGE == 'BLOB':
+        raise Exception('Blob Storage no longer supported; this code needs work.')
         container, blob = parse_azure_url(checkpoint_url)[:2]
         blob_dir = blob + '.factors'
         gtotal = sc._checkpointFile(checkpoint_url, AutoBatchedSerializer(PickleSerializer())).persist()
@@ -1518,7 +1527,7 @@ def load_checkpoint(checkpoint_url):
         min_factors = azure_library.get_blob_pickle(container, min_factors_no_gtotal_key)
         min_factors['gtotal'] = load_saved_rdd(url_min_gtotal).persist()
         min_factors['gtotal'].count()
-    return (gtotal, gmean, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state)
+    return (gtotal, gmean, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state, gtotal_valid)
 
 def make_random_subsets(gtotal_elt, num_subsets, seed=None):
     rs = numpy.random.RandomState(seed)
@@ -1559,7 +1568,7 @@ def subtract_from_csr(csr, val):
     csr.data -= val
     return csr
 
-def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, run_bucket, out_root, iters_per_mse, batch_size, win_size, win_spacing, win2_shift, pval, lrate_search_num, beta1=0.9, beta2=0.999, epsilon=1e-8, init_seed=1, restart=False, suppress_output=False, min_iters=None, max_iters=None, checkpoint_interval=80, record_param_dist=None, checkpoint=None, subsets=None, burn_in_epochs=0.5):
+def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, run_bucket, out_root, iters_per_mse, batch_size, win_size, win_spacing, win2_shift, pval, lrate_search_num, beta1=0.9, beta2=0.999, epsilon=1e-8, init_seed=1, restart=False, suppress_output=False, min_iters=None, max_iters=None, checkpoint_interval=80, record_param_dist=None, checkpoint=None, subsets=None, burn_in_epochs=0.5, gtotal_valid=None, ri2=None):
     '''Run training iterations for the 3D additive model.
     '''
     #set checkpoint dir
@@ -1570,7 +1579,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
         sc.setCheckpointDir(os.path.join('wasbs://{!s}@imputationstoretim.blob.core.windows.net'.format(run_bucket), out_root, 'checkpoints'))
 
     if checkpoint:
-        (gtotal, gmean, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state) = load_checkpoint(checkpoint)
+        (gtotal, gmean, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state, gtotal_valid) = load_checkpoint(checkpoint)
         rs = numpy.RandomState()
         rs.set_state(rand_state)
         if iters_to_test:
@@ -1589,7 +1598,12 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
             del(gtotal)
             gtotal = gtotal_subsets
 
-        iter_errs = [calc_mse(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)]
+        if gtotal_valid is None:
+            iter_errs = [calc_mse(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)]
+        else:
+            assert ri2 is not None, "Must supply ri2 to calculate MSE on gtotal_valid"
+            gtotal_valid = train_genome_dimension(gtotal_valid, ct, ct_bias, assay, assay_bias, ri2, subsets=subsets)
+            iter_errs = [calc_mse_gtotal_split(gtotal, gtotal_valid, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)]
         min_err = iter_errs[0]
         ct_m1 = numpy.zeros(ct.shape)
         ct_m2 = numpy.zeros(ct.shape)
@@ -1610,7 +1624,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                        'ct_bias_m2':ct_bias_m2.copy(), 'assay_m1':assay_m1.copy(),
                        'assay_m2':assay_m2.copy(), 'assay_bias_m1':assay_bias_m1.copy(),
                        'assay_bias_m2':assay_bias_m2.copy(), 'ct_t':ct_t.copy(),
-                       'assay_t':assay_t.copy()}
+                       'assay_t':assay_t.copy(), 'prev_lrate_search_iter':0}
 
         #burn in ct and assay parameters
         print('Burning in the model on a small subset of highly-weighted loci.')
@@ -1747,7 +1761,13 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
         if not all_iters_count % iters_per_mse:
             #check how we did
             print('Calculating MSE based on all samples.')
-            mse = calc_mse(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
+#            mse = calc_mse(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
+            if gtotal_valid is None:
+                mse = calc_mse(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
+            else:
+                assert ri2 is not None, "Must supply ri2 to calculate MSE on gtotal_valid"
+                gtotal_valid = train_genome_dimension(gtotal_valid, ct, ct_bias, assay, assay_bias, ri2, subsets=subsets)
+                mse = calc_mse_gtotal_split(gtotal, gtotal_valid, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
             if numpy.any(numpy.isnan(mse)):
                 print('Got NaN in {!s} MSE result. Breaking and returning current min_mse after {!s} iterations'.format(sname, all_iters_count))
                 break
@@ -1764,7 +1784,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                 min_factors = {'ct':ct.copy(), 'ct_bias': ct_bias.copy(),
                                'assay':assay.copy(), 'assay_bias':assay_bias.copy(),
                                'gtotal':gtotal, 'min_idx':len(iter_errs) - 1,
-                               'ct_m1':ct_m1.copy(),
+                               'ct_m1':ct_m1.copy(), 'prev_lrate_search_iter': min_factors['prev_lrate_search_iter'],
                                'ct_m2':ct_m2.copy(), 'ct_bias_m1':ct_bias_m1.copy(),
                                'ct_bias_m2':ct_bias_m2.copy(), 'assay_m1':assay_m1.copy(),
                                'assay_m2':assay_m2.copy(), 'assay_bias_m1':assay_bias_m1.copy(),
@@ -1776,7 +1796,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                 (len(iter_errs) - min_factors['min_idx']) > (2 * win_size + win_spacing)):
                 break
             if ((not min_iters or len(iter_errs) > min_iters) and
-                len(iter_errs) - min_factors['min_idx'] > win_size):
+                len(iter_errs) - min_factors['prev_lrate_search_iter'] > win_size):
                 if len(iter_errs) > (2 * win_size + win_spacing):
                     if iters_to_test:
                         to_test = list(itertools.chain(*[iter_errs[elt] for elt in iters_to_test]))
@@ -1791,6 +1811,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                     test_res.append(test)
                     if test[0] < 0 and test[1]/2 < pval:
                         if lrate_search_num:
+                            min_factors['prev_lrate_search_iter'] = min_factors['min_idx']
                             learning_rate /= 2
                             beta1 -= 1.0 - beta1
                             ct = min_factors['ct']
@@ -1860,8 +1881,12 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                                                              format(min_factors['min_idx']))
                     s3_library.set_pickle_s3(bucket_txt, min_factors_no_gtotal_key, min_factors_no_gtotal)
                     del(min_factors_no_gtotal)
+                if gtotal_valid is not None:
+                    url_gtotal_valid = 's3://{!s}/{!s}'.format(bucket_txt, os.path.join(key_dir, 'gtotal_valid.rdd.pickle'))
+                    save_rdd_as_pickle(gtotal_valid, url_gtotal_valid)
 
             elif STORAGE == 'BLOB':
+                raise Exception('Blob Storage no longer supported; this code needs work.')
                 container, blob = parse_azure_url(cur_checkpoint)[:2]
                 blob_dir = blob + '.factors'
 #                azure_library.load_blob_pickle(container, os.path.join(blob_dir, 'gmean.pickle'), gmean)
@@ -1903,12 +1928,12 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                     cmd = ['aws', 's3', 'rm', '--quiet', '--recursive', checkpoint_to_delete.rstrip('/') + '.factors/']
                     subprocess.check_call(cmd)
                 elif STORAGE == 'BLOB':
+                    raise Exception('Blob Storage no longer supported; this code needs work.')
                     container, blob = parse_azure_url(checkpoint_to_delete)[:2]
                     azure_library.delete_blob_dir(container, blob)
                     #remove associated parameters
                     azure_library.delete_blob_dir(container, blob.rstrip('/') + '.factors/')
                 checkpoint_to_delete = None
-                
         all_iters_count += 1
     return min_factors['gtotal'], min_factors['ct'], min_factors['ct_bias'], min_factors['assay'], min_factors['assay_bias'], iter_errs
 
