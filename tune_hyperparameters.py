@@ -81,6 +81,17 @@ if __name__ == "__main__":
             key.set_contents_from_filename(args.spearmint_config_path)
         elif not args.restart:
             raise Exception('Error: Output directory already exists.')
+        else:
+            #if this is a restart, uniquely record the parameters used for the restart
+            num_restart = len(s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'command_line*')))
+            restart_iter = len(s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'hypersearch*/command_line.txt'))) + 1
+            bucket = s3_library.S3.get_bucket(args.run_bucket)
+            bucket.new_key(os.path.join(args.out_root, 'restart{!s}_at_iter{:05}'.format(num_restart, restart_iter))).set_contents_from_string('')
+            key = bucket.new_key(os.path.join(args.out_root, 'command_line{!s}.txt'.format(num_restart)))
+            key.set_contents_from_string(' '.join(sys.argv) + '\n', headers={'x-amz-request-payer':'requester'})
+            key = bucket.new_key(os.path.join(args.out_root, 'config{!s}.json'.format(num_restart)))
+            key.set_contents_from_filename(args.spearmint_config_path)
+
 
     #save the root parameters as a pickle file
     with open(os.path.join(TMPDIR, 'root_params.pickle'), 'wb') as out:

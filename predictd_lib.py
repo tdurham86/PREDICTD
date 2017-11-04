@@ -127,7 +127,7 @@ def load_custom_save(rdd_url):
         num_parts = pickle.loads(pickle_in.read())
     part_urls = [os.path.join(rdd_url, 'part-{:05d}.pickle'.format(part_idx)) for part_idx in range(num_parts)]
     url_rdd = sc.parallelize(part_urls, numSlices=num_parts)
-    return url_rdd.flatMap(_custom_load).repartition(num_parts)
+    return url_rdd.flatMap(_custom_load).repartitionAndSortWithinPartitions(numPartitions=num_parts)
 
 def load_saved_rdd(rdd_url):
     rdd_bucket, rdd_key = s3_library.parse_s3_url(rdd_url)
@@ -150,7 +150,7 @@ def save_rdd_as_pickle(rdd, out_url, num_partitions=None, custom_save=True):
     '''
     if custom_save is True:
         if num_partitions is not None:
-            urls = rdd.repartition(num_partitions).mapPartitionsWithIndex(lambda x,y: _custom_save(x, y, out_url))
+            urls = rdd.repartitionAndSortWithinPartitions(numPartitions=num_partitions).mapPartitionsWithIndex(lambda x,y: _custom_save(x, y, out_url))
         else:
             urls = rdd.mapPartitionsWithIndex(lambda x,y: _custom_save(x, y, out_url))
         urls.count()
@@ -200,7 +200,7 @@ def save_model_to_s3(gmean, ct, ct_bias, assay, assay_bias, genome_total, iter_e
     print_iter_errs(iter_errs, out_bucket, os.path.join(out_root, 'iter_errs.txt'), 
                     header_line=iter_errs_header_line)
     genome_url = 's3://{!s}/{!s}'.format(out_bucket, os.path.join(out_root, 'genome_factors.rdd.pickle'))
-    save_rdd_as_pickle(genome_total.map(lambda x: (x[0], (x[2], x[3]))), genome_url)
+    save_rdd_as_pickle(genome_total.map(lambda x: (x[0], (x[1][1], x[1][2]))), genome_url)
     s3_library.set_pickle_s3(out_bucket, os.path.join(out_root, 'hyperparameters.pickle'), hyperparameters)
 
 def load_subsets(pickle_url, fold_idx=-1, valid_fold_idx=-1, trainall=False, folds_fname=None):
@@ -287,7 +287,7 @@ def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, tr
     if sort_by_genomic_position is True:
         data_sorted = data.sortByKey(numPartitions=num_partitions).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     else:
-        data_sorted = data.repartition(num_partitions).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        data_sorted = data.repartitionAndSortWithinPartitions(numPartitions=num_partitions).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     data_sorted.count()
     data.unpersist()
     del(data)
@@ -457,19 +457,19 @@ def print_iter_errs(iter_errs, out_bucket, out_key,
     key.set_contents_from_string(iter_errs_str, headers={'x-amz-request-payer':'requester'})
 
 def _calc_mse_helper(gtotal_elt, ct_assay, ct_assay_bias, ri, rbi, subsets=None):
-    gidx, data, genome, genome_bias = gtotal_elt[:4]
+    gidx, (data, genome, genome_bias) = gtotal_elt[0], gtotal_elt[1][:3]
     ret_vals = []
     #calculate MSE over all data points
     total_pred = numpy.dot(ct_assay.T, genome) + ct_assay_bias + genome_bias
     data = numpy.nan_to_num(data.toarray())
     data_locs = numpy.zeros(data.shape, dtype=bool)
     data_locs[data.nonzero()] = True
-    if subsets is None and gtotal_elt[-1] is None:
+    if subsets is None and gtotal_elt[1][-1] is None:
         subsets = [~data_locs]
     elif subsets is None:
-        subsets = gtotal_elt[-1]
-    elif gtotal_elt[-1] is not None:
-        subsets = [~numpy.logical_and(~e1, ~e2) for e1, e2 in zip(subsets, gtotal_elt[-1])]
+        subsets = gtotal_elt[1][-1]
+    elif gtotal_elt[1][-1] is not None:
+        subsets = [~numpy.logical_and(~e1, ~e2) for e1, e2 in zip(subsets, gtotal_elt[1][-1])]
     for idx, subset in enumerate(subsets):
         to_test = numpy.logical_and(data_locs, ~subset)
         try:
@@ -708,7 +708,7 @@ def train_ct_dim_sgd(gtotal_train, gtotal_valid, ct, rc, ct_bias, rbc, assay, ra
     ct_bias_m2_accum = sc.accumulator(param.zero([ct_bias,1]), UpdateAccumulatorParam())
 
     sample_frac = min(8000.0/gtotal_train.count(), 1.0)
-    burn_in = gtotal_train.sample(False, sample_frac, init_seed).repartition(1).persist()
+    burn_in = gtotal_train.sample(False, sample_frac, init_seed).repartitionAndSortWithinPartitions(numPartitions=1).persist()
     burn_in_count = burn_in.count()
     burn_in_batch_size = 1.05 * burn_in_count * len(burn_in.first()[1].data)
     print('Burning in {!s} data points on {!s} loci.'.format(burn_in_batch_size, burn_in_count))
@@ -810,10 +810,10 @@ def train_ct_dim_sgd(gtotal_train, gtotal_valid, ct, rc, ct_bias, rbc, assay, ra
     return min_factors['ct'], min_factors['ct_bias'], iter_errs
 
 def second_order_genome_updates(gtotal_elt, subset_coords, z_mat, z_h, ac_bias):
-    gidx, data, genome, genome_bias = gtotal_elt[:4]
+    gidx, (data, genome, genome_bias) = gtotal_elt[0], gtotal_elt[1][:3]
     data_to_use = data.toarray().flatten()[subset_coords]
     genome_plus = numpy.dot(numpy.dot(z_mat, data_to_use - ac_bias).T, z_h).flatten()
-    return (gidx, data, genome_plus[:-1], genome_plus[-1]) + gtotal_elt[4:]
+    return (gidx, (data, genome_plus[:-1], genome_plus[-1]) + gtotal_elt[1][3:])
 
 def train_genome_dimension(gtotal, ct, ct_bias, assay, assay_bias, ri, subsets=None):
     ct_z = numpy.hstack([ct, numpy.ones((ct.shape[0], 1))])
@@ -849,12 +849,13 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
     ct_t_updates, assay_t_updates = numpy.zeros(ct_t.shape), numpy.zeros(assay_t.shape)
     ct_grad_correction_array = numpy.array([numpy.prod(_calc_beta1(beta1, numpy.arange(1, (t_val + 1 if t_val > 0 else 2)))) for t_val in ct_t])
     assay_grad_correction_array = numpy.array([numpy.prod(_calc_beta1(beta1, numpy.arange(1, (t_val + 1 if t_val > 0 else 2)))) for t_val in assay_t])
-    genome_grad_correction_array = numpy.array([numpy.prod(_calc_beta1(beta1, numpy.arange(1, (elt[6] + 1 if elt[6] > 0 else 2)))) for elt in partition_data])
+    genome_grad_correction_array = numpy.array([numpy.prod(_calc_beta1(beta1, numpy.arange(1, (elt[1][5] + 1 if elt[1][5] > 0 else 2)))) for elt in partition_data])
     while data_points_count < batch_size:
         sample_idx = rs.choice(partition_len)
-        if len(partition_data[sample_idx][:9]) == 9:
-            g_idx, data_elt, genome, genome_bias, genome_m1, genome_m2, genome_t, genome_bias_m1, genome_bias_m2 = partition_data[sample_idx][:9]
-            subset_elt = partition_data[sample_idx][-1]
+        if len(partition_data[sample_idx][1][:8]) == 8:
+            g_idx = partition_data[sample_idx][0]
+            data_elt, genome, genome_bias, genome_m1, genome_m2, genome_t, genome_bias_m1, genome_bias_m2 = partition_data[sample_idx][1][:8]
+            subset_elt = partition_data[sample_idx][1][-1]
         else:
             raise Exception('Length of partition_data elt not 10: {!s}'.format(partition_data[sample_idx]))
         #randomly pick the data point that we will update on this iteration
@@ -911,10 +912,10 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         assay_m1_bar = ((1 - beta1_assay) * grad_hat) + (beta1_assay_next * corrected_assay_m1)
         updates['assay'] = working_assay_lrate * (assay_m1_bar/(numpy.sqrt(corrected_assay_m2) + epsilon))
         if numpy.sum(numpy.isnan(updates['assay'])):
-            if STORAGE == 'S3':
-                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct, genome, error, assay, assay_rcoef, assay_m1, corrected_assay_m1, assay_m2, corrected_assay_m2, updates['assay']))
-            elif STORAGE == 'BLOB':
-                azure_library.load_blob_pickle('encodeimputation', 'ADAM/assay_params.pickle', (ct, genome, error, assay, assay_rcoef, assay_m1, corrected_assay_m1, assay_m2, corrected_assay_m2, updates['assay']))
+#            if STORAGE == 'S3':
+#                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct, genome, error, assay, assay_rcoef, assay_m1, corrected_assay_m1, assay_m2, corrected_assay_m2, updates['assay']))
+#            elif STORAGE == 'BLOB':
+#                azure_library.load_blob_pickle('encodeimputation', 'ADAM/assay_params.pickle', (ct, genome, error, assay, assay_rcoef, assay_m1, corrected_assay_m1, assay_m2, corrected_assay_m2, updates['assay']))
             raise Exception('NaN at assay update on iteration {!s}\n{!s}'.format(data_points_count, (assay_t_elt, cxi, grad, grad_hat, assay_m1[a_coord,:], corrected_assay_m1, assay_m2[a_coord,:], corrected_assay_m2, assay_m1_bar, updates['assay'])))
 
         #update assay_bias
@@ -927,10 +928,10 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         assay_bias_m1_bar = ((1 - beta1_assay) * grad_hat) + (beta1_assay_next * corrected_assay_bias_m1)
         updates['assay_bias'] = working_assay_lrate * (assay_bias_m1_bar/(numpy.sqrt(corrected_assay_bias_m2) + epsilon))
         if numpy.sum(numpy.isnan(updates['assay_bias'])):
-            if STORAGE == 'S3':
-                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct, genome, error, assay_bias, assay_bias_rcoef, assay_bias_m1, corrected_assay_bias_m1, assay_bias_m2, corrected_assay_bias_m2, updates['assay_bias']))
-            elif STORAGE == 'BLOB':
-                azure_library.load_blob_pickle('encodeimputation', 'ADAM/assay_bias_params.pickle', (ct, genome, error, assay_bias, assay_bias_rcoef, assay_bias_m1, corrected_assay_bias_m1, assay_bias_m2, corrected_assay_bias_m2, updates['assay_bias']))
+#            if STORAGE == 'S3':
+#                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct, genome, error, assay_bias, assay_bias_rcoef, assay_bias_m1, corrected_assay_bias_m1, assay_bias_m2, corrected_assay_bias_m2, updates['assay_bias']))
+#            elif STORAGE == 'BLOB':
+#                azure_library.load_blob_pickle('encodeimputation', 'ADAM/assay_bias_params.pickle', (ct, genome, error, assay_bias, assay_bias_rcoef, assay_bias_m1, corrected_assay_bias_m1, assay_bias_m2, corrected_assay_bias_m2, updates['assay_bias']))
             raise Exception('NaN at assay_bias update on iteration {!s}'.format(data_points_count))
 
         #update ct
@@ -944,10 +945,10 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         ct_m1_bar = ((1 - beta1_ct) * grad_hat) + (beta1_ct_next * corrected_ct_m1)
         updates['ct'] = working_ct_lrate * (ct_m1_bar/(numpy.sqrt(corrected_ct_m2) + epsilon))
         if numpy.sum(numpy.isnan(updates['ct'])):
-            if STORAGE == 'S3':
-                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct, genome, error, assay, ct_rcoef, ct_m1, corrected_ct_m1, ct_m2, corrected_ct_m2, updates['ct']))
-            if STORAGE == 'BLOB':
-                azure_library.load_blob_pickle('encodeimputation', 'ADAM/ct_params.pickle', (ct, genome, error, assay, ct_rcoef, ct_m1, corrected_ct_m1, ct_m2, corrected_ct_m2, updates['ct']))
+#            if STORAGE == 'S3':
+#                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct, genome, error, assay, ct_rcoef, ct_m1, corrected_ct_m1, ct_m2, corrected_ct_m2, updates['ct']))
+#            if STORAGE == 'BLOB':
+#                azure_library.load_blob_pickle('encodeimputation', 'ADAM/ct_params.pickle', (ct, genome, error, assay, ct_rcoef, ct_m1, corrected_ct_m1, ct_m2, corrected_ct_m2, updates['ct']))
             raise Exception('NaN at ct update on iteration {!s}'.format(data_points_count))
 
         #update ct_bias
@@ -960,10 +961,10 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         ct_bias_m1_bar = ((1 - beta1_ct) * grad_hat) + (beta1_ct_next * corrected_ct_bias_m1)
         updates['ct_bias'] = working_ct_lrate * (ct_bias_m1_bar/(numpy.sqrt(corrected_ct_bias_m2) + epsilon))
         if numpy.sum(numpy.isnan(updates['ct_bias'])):
-            if STORAGE == 'S3':
-                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct_bias, genome, error, assay, ct_bias_rcoef, ct_bias_m1, corrected_ct_bias_m1, ct_bias_m2, corrected_ct_bias_m2, updates['ct_bias']))
-            if STORAGE == 'BLOB':
-                azure_library.load_blob_pickle('encodeimputation', 'ADAM/params.pickle', (ct_bias, genome, error, assay, ct_bias_rcoef, ct_bias_m1, corrected_ct_bias_m1, ct_bias_m2, corrected_ct_bias_m2, updates['ct_bias']))
+#            if STORAGE == 'S3':
+#                s3_library.set_pickle_s3('encodeimputation2', 'ADAM/params.pickle', (ct_bias, genome, error, assay, ct_bias_rcoef, ct_bias_m1, corrected_ct_bias_m1, ct_bias_m2, corrected_ct_bias_m2, updates['ct_bias']))
+#            if STORAGE == 'BLOB':
+#                azure_library.load_blob_pickle('encodeimputation', 'ADAM/params.pickle', (ct_bias, genome, error, assay, ct_bias_rcoef, ct_bias_m1, corrected_ct_bias_m1, ct_bias_m2, corrected_ct_bias_m2, updates['ct_bias']))
             raise Exception('NaN at ct_bias update on iteration {!s}'.format(data_points_count))
 
         #update genome
@@ -991,7 +992,7 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
         assay_bias[a_coord] -= updates['assay_bias']
         ct[c_coord,:] -= updates['ct']
         ct_bias[c_coord] -= updates['ct_bias']
-        partition_data[sample_idx] = (g_idx, data_elt, genome, genome_bias, genome_m1, genome_m2, genome_t, genome_bias_m1, genome_bias_m2) + partition_data[sample_idx][9:]
+        partition_data[sample_idx] = (g_idx, (data_elt, genome, genome_bias, genome_m1, genome_m2, genome_t, genome_bias_m1, genome_bias_m2) + partition_data[sample_idx][1][8:])
 
         data_points_count += 1
         accum_weight += 1
@@ -1013,13 +1014,13 @@ def one_iteration(pidx, pdata, ct, ct_rcoef, ct_bias, ct_bias_rcoef, assay, assa
     assay_bias_m1_accum.add([assay_bias_m1 * accum_weight, accum_weight])
     assay_bias_m2_accum.add([assay_bias_m2 * accum_weight, accum_weight])
 
-    if len(objective_vals):
-        if STORAGE == 'S3':
-            bucket = s3_library.S3.get_bucket('encodeimputation2')
-            key = bucket.new_key('objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx))
-            key.set_contents_from_string('\n'.join([str(elt) for elt in objective_vals]) + '\n', headers={'x-amz-request-payer':'requester'})
-        elif STORAGE == 'BLOB':
-            azure_library.load_blob_from_text('encodeimputation', 'objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx), '\n'.join([str(elt) for elt in objective_vals]) + '\n')
+#    if len(objective_vals):
+#        if STORAGE == 'S3':
+#            bucket = s3_library.S3.get_bucket('encodeimputation2')
+#            key = bucket.new_key('objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx))
+#            key.set_contents_from_string('\n'.join([str(elt) for elt in objective_vals]) + '\n', headers={'x-amz-request-payer':'requester'})
+#        elif STORAGE == 'BLOB':
+#            azure_library.load_blob_from_text('encodeimputation', 'objective_vals/obj_vals.{!s}_{!s}.txt'.format(rseed, pidx), '\n'.join([str(elt) for elt in objective_vals]) + '\n')
 
     for elt in partition_data:
         yield elt
@@ -1258,22 +1259,22 @@ def sgd_genome_only(pidx, pdata, ct, ct_bias, assay, assay_bias, genome_rcoef, g
     subset_array_list = []
     for elt in pdata:
         gidx_list.append(elt[0])
-        data_list.append(elt[1])
-        genome_array.append(elt[2])
-        genome_bias_array.append(elt[3])
-        genome_m1_array.append(elt[4])
-        genome_m2_array.append(elt[5])
-        genome_t_array.append(elt[6])
-        genome_bias_m1_array.append(elt[7])
-        genome_bias_m2_array.append(elt[8])
+        data_list.append(elt[1][0])
+        genome_array.append(elt[1][1])
+        genome_bias_array.append(elt[1][2])
+        genome_m1_array.append(elt[1][3])
+        genome_m2_array.append(elt[1][4])
+        genome_t_array.append(elt[1][5])
+        genome_bias_m1_array.append(elt[1][6])
+        genome_bias_m2_array.append(elt[1][7])
 #        err_weight_array.append(elt[9])
         if subsets is None:
-            if elt[-1] is not None:
-                subset_array_list.append(elt[-1])
+            if elt[1][-1] is not None:
+                subset_array_list.append(elt[1][-1])
             else:
                 raise Exception('Must supply subsets.')
-                subset = numpy.ones(elt[1].shape, dtype=bool)
-                subset[elt[1].nonzero()] = False
+                subset = numpy.ones(elt[1][0].shape, dtype=bool)
+                subset[elt[1][0].nonzero()] = False
                 subset_array_list.append([subset])
         num_elts += 1
 #    raise Exception((len(subset_array_list), len(subset_array_list[0]), subset_array_list))
@@ -1441,15 +1442,15 @@ def sgd_genome_only(pidx, pdata, ct, ct_bias, assay, assay_bias, genome_rcoef, g
     if auto_convergence_detection is True and min_genome_array is not None:
         for idx in xrange(num_elts):
             if subset_array_list:
-                yield (gidx_list[idx], data_list[idx], min_genome_array[idx], min_genome_bias_array[idx], min_genome_m1_array[idx], min_genome_m2_array[idx], min_genome_t_array[idx], min_genome_bias_m1_array[idx], min_genome_bias_m2_array[idx], subset_array_list[idx])
+                yield (gidx_list[idx], (data_list[idx], min_genome_array[idx], min_genome_bias_array[idx], min_genome_m1_array[idx], min_genome_m2_array[idx], min_genome_t_array[idx], min_genome_bias_m1_array[idx], min_genome_bias_m2_array[idx], subset_array_list[idx]))
             else:
-                yield (gidx_list[idx], data_list[idx], min_genome_array[idx], min_genome_bias_array[idx], min_genome_m1_array[idx], min_genome_m2_array[idx], min_genome_t_array[idx], min_genome_bias_m1_array[idx], min_genome_bias_m2_array[idx], None)
+                yield (gidx_list[idx], (data_list[idx], min_genome_array[idx], min_genome_bias_array[idx], min_genome_m1_array[idx], min_genome_m2_array[idx], min_genome_t_array[idx], min_genome_bias_m1_array[idx], min_genome_bias_m2_array[idx], None))
     else:
         for idx in xrange(num_elts):
             if subset_array_list:
-                yield (gidx_list[idx], data_list[idx], genome_array[idx], genome_bias_array[idx], genome_m1_array[idx], genome_m2_array[idx], genome_t_array[idx], genome_bias_m1_array[idx], genome_bias_m2_array[idx], subset_array_list[idx])
+                yield (gidx_list[idx], (data_list[idx], genome_array[idx], genome_bias_array[idx], genome_m1_array[idx], genome_m2_array[idx], genome_t_array[idx], genome_bias_m1_array[idx], genome_bias_m2_array[idx], subset_array_list[idx]))
             else:
-                yield (gidx_list[idx], data_list[idx], genome_array[idx], genome_bias_array[idx], genome_m1_array[idx], genome_m2_array[idx], genome_t_array[idx], genome_bias_m1_array[idx], genome_bias_m2_array[idx], None)
+                yield (gidx_list[idx], (data_list[idx], genome_array[idx], genome_bias_array[idx], genome_m1_array[idx], genome_m2_array[idx], genome_t_array[idx], genome_bias_m1_array[idx], genome_bias_m2_array[idx], None))
 
 def load_checkpoint(checkpoint_url):
     #load in the last saved model parameters
@@ -1645,7 +1646,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
         assay_bias_m1_accum = sc.accumulator(param.zero([assay_bias,1]), UpdateAccumulatorParam())
         assay_bias_m2_accum = sc.accumulator(param.zero([assay_bias,1]), UpdateAccumulatorParam())
         sample_frac = min(8000.0/gtotal.count(), 1.0)
-        burn_in = gtotal.sample(False, sample_frac, init_seed).repartition(1).persist()
+        burn_in = gtotal.sample(False, sample_frac, init_seed).repartitionAndSortWithinPartitions(numPartitions=1).persist()
         burn_in_count = burn_in.count()
         print('Burn in locus count: {!s}'.format(burn_in_count))
 #        burn_in_epochs = 0.5
@@ -1673,7 +1674,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
         burn_in.unpersist()
         del(burn_in)
         if subsets is None:
-            genome_batch_size = burn_in_epochs * gtotal.map(lambda x: numpy.sum(~x[-1][SUBSET_TRAIN]) if x[-1] is not None else len(x[1].nonzero()[0])).sum()
+            genome_batch_size = burn_in_epochs * gtotal.mapValues(lambda x: numpy.sum(~x[-1][SUBSET_TRAIN]) if x[-1] is not None else len(x[1].nonzero()[0])).sum()
         else:
             genome_batch_size = burn_in_epochs * numpy.sum(~subsets[SUBSET_TRAIN]) * (int(gtotal.count())/gtotal.getNumPartitions())
         gtotal_tmp = gtotal.mapPartitionsWithIndex(lambda x,y: sgd_genome_only(x, y,  ct, ct_bias, assay, assay_bias, ri, rbi, learning_rate, genome_batch_size, all_iters_count + 1, beta1=beta1, beta2=beta2, epsilon=epsilon, auto_convergence_detection=False, subsets=subsets)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
@@ -2009,7 +2010,7 @@ def train_predictd_ct_genome(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias
 #        assay_bias_m1_accum = sc.accumulator(param.zero([assay_bias,1]), UpdateAccumulatorParam())
 #        assay_bias_m2_accum = sc.accumulator(param.zero([assay_bias,1]), UpdateAccumulatorParam())
         sample_frac = min(8000.0/gtotal.count(), 1.0)
-        burn_in = gtotal.sample(False, sample_frac, init_seed).repartition(1).persist()
+        burn_in = gtotal.sample(False, sample_frac, init_seed).repartitionAndSortWithinPartitions(numPartitions=1).persist()
         burn_in_count = burn_in.count()
         print('Burn in locus count: {!s}'.format(burn_in_count))
         #burn in for one epoch
@@ -2415,7 +2416,7 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
         bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0s}}_{{1!s}}.{:05d}.{{2!s}}.txt'.format(extra_id))
     if coords is None:
         coords = list(zip(*itertools.product(numpy.arange(len(ct_list)), numpy.arange(len(assay_list)))))
-    sorted_w_idx = gtotal.map(lambda x: (x[0],x)).sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords, tmpdir=tmpdir)).count()
+    sorted_w_idx = gtotal.sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords, tmpdir=tmpdir)).count()
 
     bdg_coord_glob = os.path.join(tmpdir, 'bdg_coords.*.txt')
     sc.parallelize([bdg_coord_glob], numSlices=1).foreach(_combine_bdg_coords)

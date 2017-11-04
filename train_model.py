@@ -22,10 +22,10 @@ def _make_gtotal_plus_noise(gtotal_elt, rseed, noise_spread=0.01, plus=True):
                    0,                         #genome_bias_m2
                    None)                      #position-wise subsets
     if plus is True:
-        return (gidx, data, genome + rs.normal(0, noise_spread, gtotal_elt[2].shape),
-                genome_bias + rs.normal(0, noise_spread)) + gtotal_rest
+        return (gidx, (data, genome + rs.normal(0, noise_spread, gtotal_elt[2].shape),
+                genome_bias + rs.normal(0, noise_spread)) + gtotal_rest)
     else:
-        return (gidx, data, genome/noise_spread, genome_bias/noise_spread) + gtotal_rest
+        return (gidx, (data, genome/noise_spread, genome_bias/noise_spread) + gtotal_rest)
 
 def train_consolidated(args):
     #read in data
@@ -54,7 +54,8 @@ def train_consolidated(args):
     gmean = pl.calc_gmean(data, subset=subsets[pl.SUBSET_TRAIN])
     data2 = data.mapValues(lambda x: pl.subtract_from_csr(x, gmean)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     ct, ct_bias, assay, assay_bias, genome, genome_bias = pl.init_factors(data2, subsets[pl.SUBSET_TRAIN], args.latent_factors, init_seed=rs.randint(0,int(1e8)), uniform_bounds=(-0.33, 0.33))
-    gtotal_all = data2.join(genome.join(genome_bias)).map(lambda (idx, (d, (g, gb))): (idx, d, g, gb, None)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+#    gtotal_all = data2.join(genome.join(genome_bias)).map(lambda (idx, (d, (g, gb))): (idx, d, g, gb, None)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+    gtotal_all = data2.join(genome.join(genome_bias)).map(lambda (idx, (d, (g, gb))): (idx, (d, g, gb, None))).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     num_all = gtotal_all.count()
     data.unpersist()
     del(data)
@@ -68,16 +69,16 @@ def train_consolidated(args):
     num_to_select = num_all * args.training_fraction
     num_slices = max(int(numpy.floor(num_to_select/args.win_per_slice)), 20)
     if args.calc_valid_on_diff_loci is True:
-        gtotal_select = gtotal_all.sample(False, min(args.training_fraction * 2, 1.0), training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_select = gtotal_all.sample(False, min(args.training_fraction * 2, 1.0), training_fraction_seed).repartitionAndSortWithinPartitions(numPartitions=20).zipWithIndex().map(lambda ((gidx, (d, g, gb, s)), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         gtotal_init_size = int(gtotal_select.count()/2)
-        gtotal_init = gtotal_select.zipWithIndex().filter(lambda x: x[1] < gtotal_init_size).map(lambda x:x[0]).repartition(num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_init = gtotal_select.zipWithIndex().filter(lambda x: x[1] < gtotal_init_size).map(lambda x:x[0]).repartitionAndSortWithinPartitions(numPartitions=num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         gtotal_init.count()
-        gtotal_valid = gtotal_select.zipWithIndex().filter(lambda x: x[1] >= gtotal_init_size).map(lambda x:x[0]).repartition(num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_valid = gtotal_select.zipWithIndex().filter(lambda x: x[1] >= gtotal_init_size).map(lambda x:x[0]).repartitionAndSortWithinPartitions(numPartitions=num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         gtotal_valid.count()
         gtotal_select.unpersist()
         del(gtotal_select)
     else:
-        gtotal_init = gtotal_all.sample(False, min(args.training_fraction, 1.0), training_fraction_seed).repartition(num_slices).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_init = gtotal_all.sample(False, min(args.training_fraction, 1.0), training_fraction_seed).repartitionAndSortWithinPartitions(numPartitions=num_slices).zipWithIndex().map(lambda ((gidx, (d, g, gb, s)), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         gtotal_valid = None
 
     #train factors with parallel SGD 
@@ -126,7 +127,7 @@ def train_consolidated(args):
         ct_list = [e2[0] for e2 in sorted(set([(e1[0], e1[-1][0]) for e1 in data_idx.values()]), key=lambda x: x[1])]
         
         coords_to_output = list(zip(*itertools.product((ct_list.index('H1_Cell_Line'),), numpy.arange(len(assay_list)))))
-        pl.write_bigwigs2(genome_total.repartition(120), ct, ct_bias, assay, assay_bias, gmean, ct_list, assay_list, args.run_bucket, args.out_root, sinh=not args.no_bw_sinh, coords=coords_to_output)
+        pl.write_bigwigs2(genome_total.repartitionAndSortWithinPartitions(numPartitions=120), ct, ct_bias, assay, assay_bias, gmean, ct_list, assay_list, args.run_bucket, args.out_root, sinh=not args.no_bw_sinh, coords=coords_to_output)
     return final_mse[pl.MSE_VALID]
 
 
