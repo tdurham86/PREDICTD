@@ -84,7 +84,8 @@ if __name__ == "__main__":
         else:
             #if this is a restart, uniquely record the parameters used for the restart
             num_restart = len(s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'command_line*')))
-            restart_iter = len(s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'hypersearch*/command_line.txt'))) + 1
+#            restart_iter = len(s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'hypersearch*/command_line.txt'))) + 1
+            restart_iter = max([int(elt.name.split('/')[-2].split('_')[1].lstrip('0')) for elt in s3_library.glob_keys(args.run_bucket, os.path.join(args.out_root, 'hypersearch*/command_line.txt'))]) + 1
             bucket = s3_library.S3.get_bucket(args.run_bucket)
             bucket.new_key(os.path.join(args.out_root, 'restart{!s}_at_iter{:05}'.format(num_restart, restart_iter))).set_contents_from_string('')
             key = bucket.new_key(os.path.join(args.out_root, 'command_line{!s}.txt'.format(num_restart)))
