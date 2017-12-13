@@ -93,6 +93,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_test_folds', type=int, default=5, help='The number of test sets to generate. [default: %(default)s]')
     parser.add_argument('--num_valid_folds', type=int, default=8, help='The number of validation sets to generate per test set. [default: %(default)s]')
     parser.add_argument('--num_tries', type=int, default=10000, help='The number of splits to try when searching for the most balanced possible distribution of experiments across the requested number of test or validation sets. [default: %(default)s]')
+    parser.add_argument('--patch_training_zeros_with_test_allowed', action='store_true', default=False, help='If there are rows or columns in the training set with no examples, the model cannot impute those rows/columns. In the event that the random partition step in this script returns a split that leaves all data out of the training set for one or more rows/columns, the script will first try moving any data for the affected row/column from the validation set. If the validation set is also missing data from this row/column, then the last resort is to take a data set out of the test set. This last resort is disabled by default, but if this option is specified then, in the event data are missing from a particular row/column in both the training and the validation set, the script will randomly pick one data set from the test set to be moved into training.')
     args = parser.parse_args()
 
     #a data_idx has been passed in that contains the information to generate a single
@@ -111,6 +112,7 @@ if __name__ == "__main__":
         for coord in test_mat_coords:
             del(mat_coords[mat_coords.index(coord)])
         test_folds = [(mat_coords, test_mat_coords)]
+        args.num_test_folds = 1
     #the tensor description is passed in; generate both test and validation folds
     elif 'data_idx' in os.path.basename(args.data_idx_url):
         bucket_txt, key_txt = s3_library.parse_s3_url(args.data_idx_url)
@@ -131,29 +133,51 @@ if __name__ == "__main__":
 
     folds = []
     for rest, test_set in test_folds:
+        test_mat = numpy.ones(mat_size, dtype=bool)
+        test_mat[list(zip(*test_set))] = False
         valid_folds = trySplits(rest, args.num_valid_folds, args.num_tries)
         valid_mats = []
+        test_to_train = []
         for train_coords, valid_coords in valid_folds:
             train_mat = numpy.ones(mat_size, dtype=bool)
             train_mat[list(zip(*train_coords))] = False
             valid_mat = numpy.ones(mat_size, dtype=bool)
             valid_mat[list(zip(*valid_coords))] = False
+            if len(test_to_train) > 0:
+                train_mat[list(zip(*test_to_train))] = False
             #if any cell types or assays do not have any entries,
             #just move that row/column from the validation matrix
             #to the training matrix
             rowsums = numpy.sum(~train_mat, axis=1)
             if not numpy.all(rowsums):
-                zero_idx = numpy.where(rowsums == 0)[0]
-                train_mat[zero_idx,:] = valid_mat[zero_idx,:]
-                valid_mat[zero_idx,:] = True
+                all_zero_idx = numpy.where(rowsums == 0)[0]
+                for zero_idx in all_zero_idx:
+                    if numpy.any(~valid_mat[zero_idx,:]):
+                        train_mat[zero_idx,:] = valid_mat[zero_idx,:]
+                        valid_mat[zero_idx,:] = True
+                    elif args.patch_training_zeros_with_test_allowed and numpy.any(~test_mat[zero_idx,:]):
+                        avail_data = numpy.where(~test_mat[zero_idx,:])[0]
+                        col_coord = random.randint(0,len(avail_data) - 1)
+                        train_mat[zero_idx, col_coord] = False
+                        test_mat[zero_idx, col_coord] = True
+                        test_to_train.append((zero_idx, col_coord))
+                    else:
+                        raise Exception('No training data for row: {!s}'.format(zero_idx))
             colsums = numpy.sum(~train_mat, axis=0)
             if not numpy.all(colsums):
-                zero_idx = numpy.where(colsums == 0)[0]
-                train_mat[:,zero_idx] = valid_mat[:,zero_idx]
-                valid_mat[:,zero_idx] = True
+                all_zero_idx = numpy.where(colsums == 0)[0]
+                for zero_idx in all_zero_idx:
+                    if numpy.any(~valid_mat[:,zero_idx]):
+                        train_mat[:,zero_idx] = valid_mat[:,zero_idx]
+                        valid_mat[:,zero_idx] = True
+                    elif args.patch_training_zeros_with_test_allowed and numpy.any(~test_mat[:,zero_idx]):
+                        avail_data = numpy.where(~test_mat[:,zero_idx].flatten())[0]
+                        row_coord = random.randint(0,len(avail_data) - 1)
+                        train_mat[row_coord,zero_idx] = False
+                        test_mat[row_coord,zero_idx] = True
+                        test_to_train.append((row_coord,zero_idx))
+                    else:
+                        raise Exception('No training data for column: {!s}'.format(zero_idx))
             valid_mats.append({'train':train_mat, 'valid':valid_mat})
-        test_mat = numpy.ones(mat_size, dtype=bool)
-        test_mat[list(zip(*test_set))] = False
         folds.append({'train':valid_mats, 'test':test_mat})
-
     s3_library.set_pickle_s3(bucket_txt, os.path.join(os.path.dirname(key_txt), 'folds.{!s}.{!s}.pickle'.format(args.num_test_folds, args.num_valid_folds)), folds)

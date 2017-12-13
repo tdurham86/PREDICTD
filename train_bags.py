@@ -18,12 +18,17 @@ import train_model as spark_model
 spark_model.pl.s3_library = s3_library
 #spark_model.pl.azure_library = azure_library
 
-num_folds = 8
-
 if __name__ == "__main__":
     parser = spark_model.parser
+    parser.add_argument('--num_folds', type=int, default=2,
+                        help='The number of validation folds for '
+                        'which a model should be trained. This '
+                        'should be between 2 and the number of '
+                        'available validation folds, inclusive. '
+                        '[default: %(default)s]')
     args = parser.parse_args()
     out_root = args.out_root
+    num_folds = args.num_folds
 
     rs = numpy.random.RandomState(seed=args.factor_init_seed)
 
