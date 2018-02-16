@@ -51,7 +51,7 @@ if __name__ == "__main__":
 #            range_start = s3_library.get_pickle_s3(args.run_bucket, active_fold_path)
 ##        elif spark_model.pl.STORAGE == 'BLOB':
 ##            range_start = azure_library.get_blob_pickle(args.run_bucket, active_fold_path)
-            range_start = len(s3_library.glob_keys(args.run_bucket,
+            range_start = len(s3_library.glob_keys(args.run_bucket, 
                                                    os.path.join(out_root, 'valid_fold*/ct_factors.pickle')))
     except:
         range_start = 0

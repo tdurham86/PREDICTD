@@ -250,7 +250,14 @@ def _csr_remove_nan(csr):
     csr.eliminate_zeros()
     return csr
 
-def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, trainall=False, no_arcsinh_transform=False, random_fraction=None, random_fraction_seed=20, sort_by_genomic_position=False, folds_fname=None):
+def _log_data(x):
+    #first have to undo the inverse hyperbolic sine and then do ln
+    to_return = x.sinh()
+    to_return.eliminate_zeros()
+    to_return.data = numpy.log(to_return.data)
+    return to_return
+
+def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, trainall=False, no_arcsinh_transform=False, random_fraction=None, random_fraction_seed=20, sort_by_genomic_position=False, folds_fname=None, log_transform=False):
     '''Read in data from pickled RDD files prepared using download_and_transform_bigwigs.py,
     compile_transformed_data.py, and get_database_subset.py
     '''
@@ -277,6 +284,8 @@ def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, tr
         data = data.sample(False, random_fraction, random_fraction_seed)
     if no_arcsinh_transform is True:
         data = data.map(lambda (idx,d): (idx, d.sinh()))
+    elif log_transform is True:
+        data = data.mapValues(_log_data)
     #persist and load the data
     data = data.mapValues(_csr_remove_nan).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     num_records = data.count()
@@ -359,6 +368,15 @@ def load_model_old(model_url, load_data_too=False):
         assert cmd_line.get('--data_url'), "No data_url to get from this model."
         data, subsets = load_data(cmd_line.get('--data_url'), win_per_slice=cmd_line.get('--win_per_slice'), fold_idx=int(cmd_line.get('--fold_idx')) if cmd_line.get('--fold_idx') else -1, valid_fold_idx=int(cmd_line.get('--valid_fold_idx')) if cmd_line.get('--valid_fold_idx') else -1, trainall=False, no_arcsinh_transform=False, random_fraction=None, random_fraction_seed=20, sort_by_genomic_position=False, folds_fname=cmd_line.get('--folds_fname'))
     else:
+        folds_fname = cmd_line.get('--folds_fname')
+        fold_idx=int(cmd_line.get('--fold_idx')) if cmd_line.get('--fold_idx') else -1
+        valid_fold_idx=int(cmd_line.get('--valid_fold_idx')) if cmd_line.get('--valid_fold_idx') else -1
+        if folds_fname.startswith('s3'):
+            subsets = load_subsets(folds_fname, fold_idx=fold_idx, valid_fold_idx=valid_fold_idx, trainall=False,
+                                   folds_fname=os.path.basename(folds_fname))
+        else:
+            subsets = load_subsets(cmd_line.get('--data_url'), fold_idx=fold_idx, valid_fold_idx=valid_fold_idx, 
+                                   trainall=False, folds_fname=folds_fname)
         data = None
 
     return gmean, ct, ct_bias, assay, assay_bias, genome_params, rc, ra, ri, rbc, rba, rbi, learning_rate, data, subsets
@@ -534,16 +552,19 @@ def compute_imputed(gtotal, ct, ct_bias, assay, assay_bias, gmean, coords=None):
     else:
         return (gidx, numpy.sum([numpy.outer(ct[:, idx], assay[:, idx]) * genome[idx] for idx in range(len(genome))], axis=0) + genome_bias + ct_bias[:,None] + assay_bias)
 
-def _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords=None):
+def _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords=None, enforce_nonegs=False):
     gidx, data, genome, genome_bias = x[:4]
     imp_vals = (numpy.dot(ct_assay.T, genome[:,None]).flatten() + ct_assay_bias + genome_bias + gmean).reshape(data.shape)
+    #enforce non-negativity of imputed values
+    if enforce_nonegs is True:
+        imp_vals[numpy.where(imp_vals < 0)] = 0
     if coords is None:
         return gidx, imp_vals
     else:
         imp_sparse = sps.csr_matrix((imp_vals[coords], coords), shape=imp_vals.shape)
         return gidx, imp_sparse
 
-def compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=None):
+def compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=None, enforce_nonegs=False):
     if coords is None:
         coords = itertools.product(numpy.arange(ct.shape[0]), numpy.arange(assay.shape[0]))
     elif coords == 'data':
@@ -563,7 +584,7 @@ def compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=N
     ct_assay = numpy.vstack([numpy.outer(ct[:,idx], assay[:,idx]).flatten() for idx in xrange(ct.shape[1])])
     ct_assay_bias = numpy.add.outer(ct_bias, assay_bias).flatten()
 #    raise Exception(ct_assay, ct_assay_bias)
-    imputed = gtotal_rdd.map(lambda x: _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords))
+    imputed = gtotal_rdd.map(lambda x: _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords, enforce_nonegs=enforce_nonegs))
     return imputed
 
 def _calc_beta1(beta1, num_t, beta_decay=(1 - 1e-6)):
@@ -1770,7 +1791,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                 gtotal_valid = train_genome_dimension(gtotal_valid, ct, ct_bias, assay, assay_bias, ri2, subsets=subsets)
                 mse = calc_mse_gtotal_split(gtotal, gtotal_valid, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
             if numpy.any(numpy.isnan(mse)):
-                print('Got NaN in {!s} MSE result. Breaking and returning current min_mse after {!s} iterations'.format(sname, all_iters_count))
+                print('Got NaN in MSE result: {!s}. Breaking and returning current min_mse after {!s} iterations'.format(mse, all_iters_count))
                 break
             print(mse)
             iter_errs.append(copy.copy(mse))
@@ -2128,7 +2149,7 @@ def train_predictd_ct_genome(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias
             print('Calculating MSE based on all samples.')
             mse = calc_mse(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
             if numpy.any(numpy.isnan(mse)):
-                print('Got NaN in {!s} MSE result. Breaking and returning current min_mse after {!s} iterations'.format(sname, all_iters_count))
+                print('Got NaN in MSE result: {!s}. Breaking and returning current min_mse after {!s} iterations'.format(mse, all_iters_count))
                 break
             print(mse)
             iter_errs.append(copy.copy(mse))

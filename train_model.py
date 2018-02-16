@@ -29,9 +29,10 @@ def _make_gtotal_plus_noise(gtotal_elt, rseed, noise_spread=0.01, plus=True):
 
 def train_consolidated(args):
     #read in data
+    print(args.factor_init_seed)
     print('Read in data.')
     data, subsets = pl.load_data(args.data_url, win_per_slice=args.win_per_slice, fold_idx=args.fold_idx,
-                                 valid_fold_idx=args.valid_fold_idx, folds_fname=args.folds_fname)
+                                 valid_fold_idx=args.valid_fold_idx, folds_fname=args.folds_fname, log_transform=args.log_transform)
     data_idx_url = os.path.splitext(args.data_url)[0] + '.data_idx.pickle'
     data_idx = s3_library.get_pickle_s3(*s3_library.parse_s3_url(data_idx_url))
     if args.addl_data_url:
@@ -84,14 +85,22 @@ def train_consolidated(args):
     #train factors with parallel SGD 
     print('Train PREDICTD')
     iseed = rs.randint(0, int(1e8))
-    gtotal, ct, ct_bias, assay, assay_bias, iter_errs = pl.train_predictd(gtotal_init, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, args.run_bucket, args.out_root, args.iters_per_mse, args.batch_size, args.stop_winsize, args.stop_winspacing, args.stop_win2shift, args.stop_pval, args.lrate_search_num, init_seed=iseed, min_iters=args.min_iters, max_iters=args.max_iters, subsets=subsets, burn_in_epochs=args.burn_in_epochs, gtotal_valid=gtotal_valid, ri2=args.ri2)
+    gtotal, ct, ct_bias, assay, assay_bias, iter_errs = pl.train_predictd(gtotal_init, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, args.run_bucket, args.out_root, args.iters_per_mse, args.batch_size, args.stop_winsize, args.stop_winspacing, args.stop_win2shift, args.stop_pval, args.lrate_search_num, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, init_seed=iseed, restart=args.restart, checkpoint=args.checkpoint, min_iters=args.min_iters, max_iters=args.max_iters, subsets=subsets, burn_in_epochs=args.burn_in_epochs, gtotal_valid=gtotal_valid, ri2=args.ri2)
+    gtotal_out_url = 's3://{!s}/{!s}'.format(args.run_bucket, os.path.join(args.out_root, 'trained_gtotal.rd.pickle'))
+    pl.save_rdd_as_pickle(gtotal, gtotal_out_url)
 
     #train genome factors across whole genome
     print('Apply new cell type parameters across genome.')
-    genome_total = pl.train_genome_dimension(gtotal_all, 
-                                             ct, ct_bias,
-                                             assay, assay_bias, args.ri2, subsets=subsets)
+    genome_subset = pl.train_genome_dimension(gtotal, ct, ct_bias, 
+                                              assay, assay_bias, args.ri2, subsets=subsets)
+#    gtotal_tmp = gtotal.mapPartitionsWithIndex(lambda x,y: sgd_genome_only(x, y,  ct, ct_bias, assay, assay_bias, ri, rbi, learning_rate, args.batch_size, len(iter_errs) + 1, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, auto_convergence_detection=True, subsets=subsets)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+    final_gtotal_mse = pl.calc_mse(genome_subset, ct, rc, ct_bias, rbc, assay, ra, 
+                                   assay_bias, rba, ri, rbi, subsets=subsets)
+    iter_errs.append(final_gtotal_mse)
 
+    genome_total = pl.train_genome_dimension(gtotal_all, ct, ct_bias,
+                                             assay, assay_bias, args.ri2, subsets=subsets)
+#    gtotal_tmp = gtotal_all.mapPartitionsWithIndex(lambda x,y: sgd_genome_only(x, y,  ct, ct_bias, assay, assay_bias, ri, rbi, learning_rate, args.batch_size, len(iter_errs) + 1, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, auto_convergence_detection=True, subsets=subsets)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     final_mse = pl.calc_mse(genome_total, ct, rc, ct_bias, rbc, assay, ra,
                             assay_bias, rba, ri, rbi, subsets=subsets)
     iter_errs.append(final_mse)
@@ -195,6 +204,7 @@ parser.add_argument('--training_fraction', type=float, default=0.01, help='The f
 #parser.add_argument('--training_fraction_seed', type=int, default=55)
 parser.add_argument('--no_browser_tracks', action='store_true', default=False, help='If set, do not output any tracks of imputed data after training. Useful if one is training multiple models with the goal of averaging their results or if one is only interested in whole genome imputed tracks and plans to run the impute_data.py script after model training.')
 parser.add_argument('--calc_valid_on_diff_loci', action='store_true', default=False, help='If set, then during the parallel stochastic gradient descent iterations the validation and test set mean squared error will be calculated on a different set of genomic loci than the ones used for training the model.')
+parser.add_argument('--log_transform', action='store_true', default=False, help='Transform the input data with the natural log instead of the inverse hyperbolic sine before model training.')
 
 if __name__ == "__main__":
     args = parser.parse_args()
