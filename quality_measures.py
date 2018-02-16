@@ -64,9 +64,10 @@ def load_sparkpickles(in_queue, out_queue, flatten=True):
         out_queue.put_nowait([(idx, flatten_csr(mat) if flatten is True else mat) for idx, mat in part_data])
 #            out_queue.put_nowait(sparkpickle.load(path_in))
         time.sleep(0.1)
+        in_queue.task_done()
 
 def read_in_parts(parts_glob, num_tries=4, num_procs=16, flatten=True):
-    part_q = mp.Queue()
+    part_q = mp.JoinableQueue()
     data_q = mp.Queue()
     if parts_glob.startswith('s3://'):
         bucket_txt, key_txt = s3_library.parse_s3_url(parts_glob)
@@ -79,6 +80,8 @@ def read_in_parts(parts_glob, num_tries=4, num_procs=16, flatten=True):
     procs = [mp.Process(target=load_sparkpickles, args=(part_q, data_q), kwargs={'flatten':flatten}) for _ in range(num_procs)]
     for proc in procs:
         proc.start()
+
+    part_q.join()
 
     data = []
     tries = num_tries
@@ -113,7 +116,7 @@ def match_keys(gidx1, gidx2):
     return gidx2_mapped_idx
 
 def join_data(gidx1, data1, gidx2, data2):
-    if data1.shape[0] < data2.shape[0]:
+    if data1.shape[0] <= data2.shape[0]:
         data_to_select = match_keys(gidx1, gidx2)
         gidx2 = [gidx2[i] for i in data_to_select]
         data2 = data2[data_to_select, :]
@@ -131,6 +134,8 @@ def get_data(parts_glob, working_dir, num_procs, save_to_disk=False):
         if save_to_disk is True:
             with open(parts_path, 'wb') as out:
                 pickle.dump((parts_gidx, parts), out)
+                out.flush()
+                os.fsync(out.fileno())
     else:
         with open(parts_path, 'rb') as pickle_in:
             parts_gidx, parts = pickle.load(pickle_in)
@@ -145,7 +150,7 @@ if __name__ == "__main__":
     parser.add_argument('--working_dir', default='/data/peak_pr', help='The local directory to use as a workspace for computing the quality measures. [default: %(default)s]')
     parser.add_argument('--fold_idx', type=int, default=0, help='The index of the test set specifying the experiments on which the quality measures should be calculated. [default: %(default)s]')
 #    parser.add_argument('--valid_fold_idx', type=int, default=0, help='The index of the validation set corresponding to the training set to use for ')
-    parser.add_argument('--fold_name', default='folds.5.8.pickle', help='The basename of the file specifying the test subsets to use. [default: %(default)s]')
+    parser.add_argument('--fold_name', help='The basename of the file specifying the test subsets to use. [default: %(default)s]')
     parser.add_argument('--out_name', help='The base filename for the quality measures output. [default: \'metrics_fold{!s}.out\'.format(args.fold_idx)]')
     parser.add_argument('--num_procs', type=int, default=1, help='The number of processes to use when reading in the observed and imputed data. If multiple cores are available, setting this option > 1 can speed up data loading. [default: %(default)s]')
     parser.add_argument('--only_encodePilots', action='store_true', default=False, help='If set, calculate quality measures only over the ENCODE Pilot Regions, even if the RDD elements include the non-coding human accelerated regions as well.')
@@ -153,13 +158,17 @@ if __name__ == "__main__":
 
     data_idx_bucket, data_idx_key = s3_library.parse_s3_url(args.data_idx_url)
     data_idx = s3_library.get_pickle_s3(data_idx_bucket, data_idx_key)
-    if args.fold_name.startswith('s3'):
-        subsets_bucket, subsets_key = s3_library.parse_s3_url(args.fold_name)
+    if args.fold_name is not None:
+        if args.fold_name.startswith('s3'):
+            subsets_bucket, subsets_key = s3_library.parse_s3_url(args.fold_name)
+        else:
+            subsets_bucket = data_idx_bucket
+            subsets_key = os.path.join(os.path.dirname(data_idx_key), args.fold_name)
+            if s3_library.S3.get_bucket(subsets_bucket).get_key(subsets_key):
+                subsets = s3_library.get_pickle_s3(data_idx_bucket, subsets_key)[args.fold_idx]
     else:
-        subsets_bucket = data_idx_bucket
-        subsets_key = os.path.join(os.path.dirname(data_idx_key), args.fold_name)
-    if s3_library.S3.get_bucket(subsets_bucket).get_key(subsets_key):
-        subsets = s3_library.get_pickle_s3(data_idx_bucket, subsets_key)[args.fold_idx]
+        #ignore subsets and just calc quality metrics for all experiments in data_idx
+        subsets = None
 #        subsets_dict = {}
 #        if isinstance(subsets, dict):
 #            if isinstance(subsets['train'], list):
@@ -175,32 +184,9 @@ if __name__ == "__main__":
 #    data_idx = s3_library.get_pickle_s3('encodeimputation-alldata', '25bp/data_idx.pickle')
 #    subsets = s3_library.get_pickle_s3('encodeimputation-alldata', os.path.join('25bp',args.fold_name))[args.fold_idx]
 
-    print('Getting observed data.')
-    data_gidx, data = get_data(args.data_glob, args.working_dir, args.num_procs, save_to_disk=False)
-
-    print('Observed data retrieved. Getting imputed data.')
-    imputed_gidx, imputed = get_data(args.imputed_glob, args.working_dir, args.num_procs, save_to_disk=False)
-
-    print('Imputed data retrieved. Computing performance metrics.')
-    if args.alternative_imputed:
-        alt_imputed_gidx, alt_imputed = get_data(args.alternative_imputed, args.working_dir, args.num_procs, save_to_disk=False)
-
-    if imputed.shape[0] != data.shape[0]:
-        print('Imputed and Data have different genome dimension lengths. Joining.')
-        imputed_gidx, imputed, data_gidx, data = join_data(imputed_gidx, imputed, data_gidx, data)
-    if args.alternative_imputed and alt_imputed.shape[0] != data.shape[0]:
-        print('Alternative Imputed and Data have different genome dimension lengths. Joining.')
-        if alt_imputed.shape[0] < data.shape[0]:
-            alt_imputed_gidx, alt_imputed, data_gidx, data = join_data(alt_imputed_gidx, alt_imputed, data_gidx, data)
-            alt_imputed_gidx, alt_imputed, imputed_gidx, imputed = join_data(alt_imputed_gidx, alt_imputed, imputed_gidx, imputed)
-        else:
-            alt_imputed_gidx, alt_imputed, data_gidx, data = join_data(alt_imputed_gidx, alt_imputed, data_gidx, data)
-
     working_dir = args.working_dir
     if not os.path.isdir(working_dir):
         os.makedirs(working_dir)
-    out_name = args.out_name if args.out_name else 'metrics_fold{!s}.out'.format(args.fold_idx)
-
     if 'chromimpute' in args.imputed_glob or args.only_encodePilots is True:
         window_regions_name = 'hg19.encodePilotRegions.25bp.windows.bed.gz'
     else:
@@ -208,6 +194,51 @@ if __name__ == "__main__":
     window_regions_path = os.path.join(working_dir, window_regions_name)
     if not os.path.exists(window_regions_path):
         s3_library.S3.get_bucket('encodeimputation-alldata').get_key(os.path.join('25bp', window_regions_name)).get_contents_to_filename(window_regions_path, headers={'x-amz-request-payer':'requester'})
+    with gzip.open(window_regions_path) as lines_in:
+        window_set = set()
+        for line in lines_in:
+            line = line.strip().split()
+            window_set.add((line[0], int(line[1])))
+
+    print('Getting observed data.')
+    data_gidx, data = get_data(args.data_glob, args.working_dir, args.num_procs, save_to_disk=False)
+    data_gidx, selector = zip(*[(elt, idx) for idx, elt in enumerate(data_gidx) if elt in window_set])
+    data = data[selector,:]
+    print('Data shape: {!s}'.format(data.shape))
+
+    print('Observed data retrieved. Getting imputed data.')
+    imputed_gidx, imputed = get_data(args.imputed_glob, args.working_dir, args.num_procs, save_to_disk=False)
+    imputed_gidx, selector = zip(*[(elt, idx) for idx, elt in enumerate(imputed_gidx) if elt in window_set])
+    imputed = imputed[selector,:]
+    print('Imputed shape: {!s}'.format(imputed.shape))
+
+    if args.alternative_imputed:
+        print('Imputed data retrieved. Getting alternative imputed data.')
+        alt_imputed_gidx, alt_imputed = get_data(args.alternative_imputed, args.working_dir, args.num_procs, save_to_disk=False)
+        alt_imputed_gidx, selector = zip(*[(elt, idx) for idx, elt in enumerate(alt_imputed_gidx) if elt in window_set])
+        alt_imputed = alt_imputed[selector,:]
+        print('Alternative imputed shape: {!s}'.format(alt_imputed.shape))
+
+    joined = False
+    if imputed.shape[0] != data.shape[0]:
+        print('Imputed and Data have different genome dimension lengths. Joining.')
+        imputed_gidx, imputed, data_gidx, data = join_data(imputed_gidx, imputed, data_gidx, data)
+        joined = True
+    if args.alternative_imputed and alt_imputed.shape[0] != data.shape[0]:
+        print('Alternative Imputed and Data have different genome dimension lengths. Joining.')
+        if alt_imputed.shape[0] < data.shape[0]:
+            alt_imputed_gidx, alt_imputed, data_gidx, data = join_data(alt_imputed_gidx, alt_imputed, data_gidx, data)
+            alt_imputed_gidx, alt_imputed, imputed_gidx, imputed = join_data(alt_imputed_gidx, alt_imputed, imputed_gidx, imputed)
+        else:
+            alt_imputed_gidx, alt_imputed, data_gidx, data = join_data(alt_imputed_gidx, alt_imputed, data_gidx, data)
+        joined = True
+    if joined is True:
+        print('Joined data shape: {!s}\nJoined imputed shape: {!s}\nJoined alternative imputed shape: {!s}'.format(data.shape, imputed.shape, alt_imputed.shape))
+    print('All data retrieved. Computing performance metrics.')
+
+    out_name = args.out_name if args.out_name else 'metrics_fold{!s}.out'.format(args.fold_idx)
+    if out_name.startswith('s3://'):
+        out_name = os.path.basename(out_name)
 
     cols_w_data = set(imputed.nonzero()[1])
     for elt in sorted(data_idx.values(), key=lambda x: x[:2]):
@@ -244,6 +275,7 @@ if __name__ == "__main__":
             mse1altimprecip = numpy.mean((data_vals[imputed_vals_argsort[0 - size_pct1:]] - alt_imputed_vals[imputed_vals_argsort[0 - size_pct1:]]) ** 2)
         else:
             mse1altimp = None
+            mse1altimprecip = None
 
         #GWcorrasinh - genome-wide Pearson correlation on the asinh-transformed data
         gwcorrasinh = stats.pearsonr(data_vals, imputed_vals)
@@ -306,10 +338,14 @@ if __name__ == "__main__":
         out_vals = ['{!s}-{!s}'.format(elt[0], elt[1]), elt[-1][0], elt[-1][1], 
                     mseglobal, mse1obs, mse1imp, 
                     gwcorrasinh[0], gwcorrasinh[1], gwspcorr[0], gwspcorr[1], gwcorr[0], gwcorr[1],
-                    match1, catch1obs, catch1imp, aucobs1, aucimp1, catchpeakobs, mse1altimp]
+                    match1, catch1obs, catch1imp, aucobs1, aucimp1, catchpeakobs, mse1altimp, mse1altimprecip]
 #        out_vals = ['{!s}-{!s}'.format(elt[0], elt[1]), elt[-1][0], elt[-1][1], mse1altimp, mse1altimprecip]
         with open(os.path.join(working_dir, out_name), 'a') as out:
             out.write('\t'.join([str(elt) for elt in out_vals]) + '\n')
 
-        out_bucket, out_key = s3_library.parse_s3_url(os.path.dirname(args.imputed_glob))
-        s3_library.S3.get_bucket(out_bucket).new_key(os.path.join(os.path.dirname(out_key), out_name)).set_contents_from_filename(os.path.join(working_dir, out_name), headers={'x-amz-request-payer':'requester'})
+        if not args.out_name.startswith('s3://'):
+            out_bucket, out_key = s3_library.parse_s3_url(os.path.dirname(args.imputed_glob))
+            out_key_full = os.path.join(os.path.dirname(out_key), out_name)
+        else:
+            out_bucket, out_key_full = s3_library.parse_s3_url(args.out_name)
+        s3_library.S3.get_bucket(out_bucket).new_key(out_key_full).set_contents_from_filename(os.path.join(working_dir, out_name), headers={'x-amz-request-payer':'requester'})

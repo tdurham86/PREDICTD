@@ -20,11 +20,17 @@ def avg_impute(gtotal_elt, second_order_params):
     final_impute = numpy.zeros(gtotal_elt[1].shape, dtype=float)
     impute_sum = final_impute.copy()
     for (tidx, vidx), (z_mat, z_h, ac_bias, ct_assay, ct_assay_bias, gmean, subsets_flat) in second_order_params:
-        gidx, data, genome, genome_bias = pl.second_order_genome_updates(gtotal_elt, numpy.where(~subsets_flat[pl.SUBSET_TRAIN]), z_mat, z_h, ac_bias)[:4]
-        imputed = pl._compute_imputed2_helper((gidx, data, genome, genome_bias), ct_assay, ct_assay_bias, gmean)[1]
+        if len(gtotal_elt) == 2:
+            data_elt = gtotal_elt[1][0]
+        else:
+            data_elt = gtotal_elt[1].copy()
+        data_elt.data -= gmean
+        #res is: (data, genome, genome_bias)
+        gidx, res = pl.second_order_genome_updates((gtotal_elt[0], (data_elt, None, None)), numpy.where(~subsets_flat[pl.SUBSET_TRAIN]), z_mat, z_h, ac_bias)
+        imputed = pl._compute_imputed2_helper((gidx, res), ct_assay, ct_assay_bias, gmean)[1]
         non_train_coords = numpy.where(~numpy.logical_or(~subsets_flat[pl.SUBSET_TRAIN].reshape(data.shape),
                                                          ~subsets_flat[pl.SUBSET_VALID].reshape(data.shape)))
-        impute_sum[non_train_coords] += 1.0 
+        impute_sum[non_train_coords] += 1.0
         final_impute[non_train_coords] += imputed[non_train_coords]
     imputed_coords = numpy.where(impute_sum)
     final_impute[imputed_coords] /= impute_sum[imputed_coords]

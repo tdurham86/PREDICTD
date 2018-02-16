@@ -11,6 +11,7 @@ import os
 import pickle
 from plumbum import local
 from pyspark import StorageLevel, AccumulatorParam
+from pyspark.serializers import AutoBatchedSerializer, PickleSerializer
 import scipy.sparse as sps
 from scipy.stats import ranksums
 import shlex
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib
 import zlib
 
@@ -250,14 +252,7 @@ def _csr_remove_nan(csr):
     csr.eliminate_zeros()
     return csr
 
-def _log_data(x):
-    #first have to undo the inverse hyperbolic sine and then do ln
-    to_return = x.sinh()
-    to_return.eliminate_zeros()
-    to_return.data = numpy.log(to_return.data)
-    return to_return
-
-def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, trainall=False, no_arcsinh_transform=False, random_fraction=None, random_fraction_seed=20, sort_by_genomic_position=False, folds_fname=None, log_transform=False):
+def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, trainall=False, no_arcsinh_transform=False, random_fraction=None, random_fraction_seed=20, sort_by_genomic_position=False, folds_fname=None):
     '''Read in data from pickled RDD files prepared using download_and_transform_bigwigs.py,
     compile_transformed_data.py, and get_database_subset.py
     '''
@@ -284,8 +279,6 @@ def load_data(pickle_url, win_per_slice=None, fold_idx=-1, valid_fold_idx=-1, tr
         data = data.sample(False, random_fraction, random_fraction_seed)
     if no_arcsinh_transform is True:
         data = data.map(lambda (idx,d): (idx, d.sinh()))
-    elif log_transform is True:
-        data = data.mapValues(_log_data)
     #persist and load the data
     data = data.mapValues(_csr_remove_nan).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     num_records = data.count()
@@ -552,17 +545,44 @@ def compute_imputed(gtotal, ct, ct_bias, assay, assay_bias, gmean, coords=None):
     else:
         return (gidx, numpy.sum([numpy.outer(ct[:, idx], assay[:, idx]) * genome[idx] for idx in range(len(genome))], axis=0) + genome_bias + ct_bias[:,None] + assay_bias)
 
+#def _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords=None, enforce_nonegs=False):
+#    if len(x) == 2:
+#        gidx, (data, genome, genome_bias) = x[0], x[1][:3]
+#    else:
+#        gidx, data, genome, genome_bias = x[:4]
+#    imp_vals = (numpy.dot(ct_assay.T, genome[:,None]).flatten() + ct_assay_bias + genome_bias + gmean).reshape(data.shape)
+#    #enforce non-negativity of imputed values
+#    if enforce_nonegs is True:
+#        imp_vals[numpy.where(imp_vals < 0)] = 0
+#    if coords is None:
+#        return gidx, imp_vals
+#    else:
+#        imp_sparse = sps.csr_matrix((imp_vals[coords], coords), shape=imp_vals.shape)
+#        return gidx, imp_sparse
+
 def _compute_imputed2_helper(x, ct_assay, ct_assay_bias, gmean, coords=None, enforce_nonegs=False):
-    gidx, data, genome, genome_bias = x[:4]
-    imp_vals = (numpy.dot(ct_assay.T, genome[:,None]).flatten() + ct_assay_bias + genome_bias + gmean).reshape(data.shape)
-    #enforce non-negativity of imputed values
-    if enforce_nonegs is True:
-        imp_vals[numpy.where(imp_vals < 0)] = 0
-    if coords is None:
-        return gidx, imp_vals
+    if len(x) == 2:
+        gidx, (data, genome, genome_bias) = x[0], x[1][:3]
     else:
-        imp_sparse = sps.csr_matrix((imp_vals[coords], coords), shape=imp_vals.shape)
+        gidx, data, genome, genome_bias = x[:4]
+    if coords is not None:
+        #ensure that the coords elements are numpy arrays while calculating the flat coords
+        flat_coords = (numpy.array(coords[0]) * data.shape[1]) + numpy.array(coords[1])
+        try:
+            imp_vals = (numpy.dot(ct_assay[:,flat_coords].T, genome[:,None]).flatten() + ct_assay_bias[flat_coords] + genome_bias + gmean)
+        except IndexError:
+            raise Exception(flat_coords, ct_assay.shape, ct_assay_bias.shape, genome.shape, genome_bias)
+        #enforce non-negativity of imputed values
+        if enforce_nonegs is True:
+            imp_vals[numpy.where(imp_vals < 0)] = 0
+        imp_sparse = sps.csr_matrix((imp_vals, coords), shape=data.shape)
         return gidx, imp_sparse
+    else:
+        imp_vals = (numpy.dot(ct_assay.T, genome[:,None]).flatten() + ct_assay_bias + genome_bias + gmean).reshape(data.shape)
+        #enforce non-negativity of imputed values
+        if enforce_nonegs is True:
+            imp_vals[numpy.where(imp_vals < 0)] = 0
+        return gidx, imp_vals
 
 def compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=None, enforce_nonegs=False):
     if coords is None:
@@ -1254,7 +1274,7 @@ def _sgd_genome_compute_mse(data_list, genome_array, genome_bias_array, ct, assa
             coords_to_test = numpy.where(~subset.reshape(subset.shape[0], -1))
             mse_vals[idx] = numpy.mean(se[coords_to_test])
         else:
-            coord_to_test = numpy.where(~subset)[0]
+            coords_to_test = numpy.where(~subset)[0]
             mse_vals[idx] = numpy.mean(se[:,coords_to_test])
 
     return mse_vals
@@ -1481,7 +1501,7 @@ def load_checkpoint(checkpoint_url):
         key_dir = key_txt + '.factors'
         gtotal = sc._checkpointFile(checkpoint_url, AutoBatchedSerializer(PickleSerializer())).persist()
         gtotal.count()
-        gmean = s3_library.get_pickle_s3(bucket_txt, os.path.join(key_dir, 'gmean.pickle'))
+#        gmean = s3_library.get_pickle_s3(bucket_txt, os.path.join(key_dir, 'gmean.pickle'))
         ct = s3_library.get_pickle_s3(bucket_txt, os.path.join(key_dir, 'ct.pickle'))
         ct_bias = s3_library.get_pickle_s3(bucket_txt, os.path.join(key_dir, 'ct_bias.pickle'))
         assay = s3_library.get_pickle_s3(bucket_txt, os.path.join(key_dir, 'assay.pickle'))
@@ -1521,7 +1541,7 @@ def load_checkpoint(checkpoint_url):
         blob_dir = blob + '.factors'
         gtotal = sc._checkpointFile(checkpoint_url, AutoBatchedSerializer(PickleSerializer())).persist()
         gtotal.count()
-        gmean = azure_library.get_blob_pickle(container, os.path.join(blob_dir, 'gmean.pickle'))
+#        gmean = azure_library.get_blob_pickle(container, os.path.join(blob_dir, 'gmean.pickle'))
         ct = azure_library.get_blob_pickle(container, os.path.join(blob_dir, 'ct.pickle'))
         ct_bias = azure_library.get_blob_pickle(container, os.path.join(blob_dir, 'ct_bias.pickle'))
         assay = azure_library.get_blob_pickle(container, os.path.join(blob_dir, 'assay.pickle'))
@@ -1549,7 +1569,7 @@ def load_checkpoint(checkpoint_url):
         min_factors = azure_library.get_blob_pickle(container, min_factors_no_gtotal_key)
         min_factors['gtotal'] = load_saved_rdd(url_min_gtotal).persist()
         min_factors['gtotal'].count()
-    return (gtotal, gmean, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state, gtotal_valid)
+    return (gtotal, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state, gtotal_valid)
 
 def make_random_subsets(gtotal_elt, num_subsets, seed=None):
     rs = numpy.random.RandomState(seed)
@@ -1601,8 +1621,8 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
         sc.setCheckpointDir(os.path.join('wasbs://{!s}@imputationstoretim.blob.core.windows.net'.format(run_bucket), out_root, 'checkpoints'))
 
     if checkpoint:
-        (gtotal, gmean, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state, gtotal_valid) = load_checkpoint(checkpoint)
-        rs = numpy.RandomState()
+        (gtotal, ct, ct_bias, assay, assay_bias, ct_m1, ct_m2, ct_bias_m1, ct_bias_m2, assay_m1, assay_m2, assay_bias_m1, assay_bias_m2, ct_t, assay_t, iter_errs, iters_to_test, test_res, min_err, min_factors, subsets, rand_state, gtotal_valid) = load_checkpoint(checkpoint)
+        rs = numpy.random.RandomState()
         rs.set_state(rand_state)
         if iters_to_test:
             for _ in range(len(iters_to_test) - 1):
@@ -1791,7 +1811,7 @@ def train_predictd(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri,
                 gtotal_valid = train_genome_dimension(gtotal_valid, ct, ct_bias, assay, assay_bias, ri2, subsets=subsets)
                 mse = calc_mse_gtotal_split(gtotal, gtotal_valid, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
             if numpy.any(numpy.isnan(mse)):
-                print('Got NaN in MSE result: {!s}. Breaking and returning current min_mse after {!s} iterations'.format(mse, all_iters_count))
+                print('Got NaN in {!s} MSE result. Breaking and returning current min_mse after {!s} iterations'.format(sname, all_iters_count))
                 break
             print(mse)
             iter_errs.append(copy.copy(mse))
@@ -2149,7 +2169,7 @@ def train_predictd_ct_genome(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias
             print('Calculating MSE based on all samples.')
             mse = calc_mse(gtotal, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, subsets=subsets)
             if numpy.any(numpy.isnan(mse)):
-                print('Got NaN in MSE result: {!s}. Breaking and returning current min_mse after {!s} iterations'.format(mse, all_iters_count))
+                print('Got NaN in {!s} MSE result. Breaking and returning current min_mse after {!s} iterations'.format(sname, all_iters_count))
                 break
             print(mse)
             iter_errs.append(copy.copy(mse))
@@ -2321,7 +2341,7 @@ def _just_write_bdg_coords(part_idx, rdd_part, bdg_path, winsize=25, tmpdir='/da
     numpy.savetxt(coords_path, bdg_coords, delimiter='\t', fmt=['%s', '%i', '%i'])
     yield part_idx
 
-def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=25, sinh=True, coords=None, tmpdir='/data/tmp'):
+def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=25, sinh=True, coords=None, tmpdir='/data/tmp', enforce_nonegs=True):
     rdd_part = list(rdd_part)
     #if this is already an imputed rdd, then no need to call compute_imputed
     if ct is None:
@@ -2332,6 +2352,9 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
     else:
         gidx, imputed_tensor, data_tensor = list(zip(*[compute_imputed(elt, ct, ct_bias, assay, assay_bias, gmean) + (elt[1],) for elt in rdd_part]))
 
+    if not os.path.isdir(tmpdir):
+        os.makedirs(tmpdir)
+
     #save bedgraph coords to join with cell type/assay data
     bdg_coords = numpy.array(gidx, dtype=object)
     bdg_coords = numpy.hstack([bdg_coords, bdg_coords[:,1][:,None] + winsize])
@@ -2339,15 +2362,16 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
     numpy.savetxt(coords_path, bdg_coords, delimiter='\t', fmt=['%s', '%i', '%i'])
 
     #save cell type/assay data
-    if isinstance(imputed_tensor[0], sps.csr_matrix):
-        imputed_tensor = numpy.array([elt.toarray() for elt in imputed_tensor])
-    else:
-        imputed_tensor = numpy.array(imputed_tensor)
+    imputed_tensor = numpy.dstack([elt.toarray() if isinstance(elt, sps.csr_matrix) else elt 
+                                   for elt in imputed_tensor])
     if data_tensor is not None:
         for elt in data_tensor:
             elt.data += gmean
-        data_tensor = numpy.array([elt.toarray() for elt in data_tensor])
-    imputed_tensor[numpy.where(imputed_tensor < 0)] = 0
+        data_tensor = numpy.dstack([elt.toarray() for elt in data_tensor])
+
+    if enforce_nonegs is True:
+        imputed_tensor[numpy.where(imputed_tensor < 0)] = 0
+
     if sinh is True:
         imputed_tensor = numpy.sinh(imputed_tensor)
         if data_tensor is not None:
@@ -2365,13 +2389,13 @@ def _construct_bdg_parts(part_idx, rdd_part, bdg_path, ct_list, assay_list, ct, 
             os.makedirs(os.path.dirname(impsave))
         except:
             pass
-        numpy.savetxt(impsave, imputed_tensor[:, ct_idx, assay_idx], delimiter='\t', fmt='%.8e')
+        numpy.savetxt(impsave, imputed_tensor[ct_idx, assay_idx, :], delimiter='\t', fmt='%.8e')
         if data_tensor is not None:
             obssave = bdg_path.format(ct_name, assay_name, '{:05d}.obs'.format(part_idx))
-            numpy.savetxt(obssave, data_tensor[:, ct_idx, assay_idx], delimiter='\t', fmt='%.8e')
+            numpy.savetxt(obssave, data_tensor[ct_idx, assay_idx, :], delimiter='\t', fmt='%.8e')
     yield part_idx
 
-def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_public=True, tmpdir='/data/tmp', sort_bdg=False):
+def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_public=True, tmpdir='/data/tmp', sort_bdg=False, no_bw=False):
     chrom_sizes_path = os.path.join(tmpdir, 'hg19.chrom.sizes')
     chrom_bed_path = os.path.join(tmpdir, 'hg19.chrom.bed')
     while not os.path.exists(chrom_sizes_path):
@@ -2402,10 +2426,13 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
                 chain = unixcat[bdg_paths] | unixpaste[os.path.join(tmpdir, 'bdg_coords.txt'), '-'] | bedtools['intersect', '-wa', '-a', 'stdin', '-b', chrom_bed_path, '-f', '1.0'] > out_bdg
             chain()
 
-            out_bw = os.path.splitext(out_bdg)[0] + '.bw'
-            bedGraphToBigWig = local['bedGraphToBigWig']
-            bedGraphToBigWig(out_bdg, chrom_sizes_path, out_bw)
-            os.remove(out_bdg)
+            if no_bw is True:
+                out_bw = out_bdg
+            else:
+                out_bw = os.path.splitext(out_bdg)[0] + '.bw'
+                bedGraphToBigWig = local['bedGraphToBigWig']
+                bedGraphToBigWig(out_bdg, chrom_sizes_path, out_bw)
+                os.remove(out_bdg)
 
             out_key = s3_library.S3.get_bucket(out_bucket).new_key(os.path.join(out_root, os.path.basename(out_bw)))
             out_key.set_contents_from_filename(out_bw, headers={'x-amz-request-payer':'requester'})
@@ -2418,6 +2445,79 @@ def _compile_bdg_and_upload(ctassay_part, out_bucket, out_root, bdg_path, make_p
             yield ('track type=bigWig maxHeightPixels=50 name={!s} visibility=full color={!s} bigDataUrl={!s}'.
                    format(os.path.basename(out_key.name), assay_color, url))
 
+def _compile_bdg_batch_and_upload(ctassay_part, out_bucket, out_root, bdg_path, tmpdir='/mnt2/'):
+    '''Just produce bedgraph files for the data that has been printed so far and save them to s3 to clear out space for the next batch of data in scratch storage.
+    '''
+    chrom_bed_path = os.path.join(tmpdir, 'hg19.chrom.bed')
+    while not os.path.exists(chrom_bed_path):
+        try:
+            os.makedirs(chrom_bed_path+'.lock')
+        except:
+            time.sleep(numpy.random.randint(10,20))
+        else:
+            #get chrom_bed
+            s3_library.S3.get_bucket('encodeimputation-alldata').get_key('hg19.chrom.bed').get_contents_to_filename(chrom_bed_path, headers={'x-amz-request-payer':'requester'})
+            os.rmdir(chrom_bed_path+'.lock')
+    for ct_name, assay_name in ctassay_part:
+        for bdg_type in ['imp', 'obs']:
+            out_bdg = os.path.join(tmpdir, os.path.basename(bdg_path.format(ct_name, assay_name, bdg_type)).replace('.*', ''))
+            if not out_bdg.endswith('.gz'):
+                out_bdg += '.gz'
+            bdg_glob = bdg_path.format(ct_name, assay_name, '*.{!s}'.format(bdg_type))
+            bdg_paths = sorted(glob.glob(bdg_glob))
+            if not bdg_paths:
+                continue
+
+            unixcat, unixpaste, unixgzip, bedtools = local['cat'], local['paste'], local['gzip'], local['bedtools']
+            chain = unixcat[bdg_paths] | unixpaste[os.path.join(tmpdir, 'bdg_coords.txt'), '-'] | bedtools['intersect', '-wa', '-a', 'stdin', '-b', chrom_bed_path, '-f', '1.0'] | unixgzip > out_bdg
+            chain()
+
+            out_key = s3_library.S3.get_bucket(out_bucket).new_key(os.path.join(out_root, ct_name, assay_name, os.path.basename(out_bdg)))
+            out_key.set_contents_from_filename(out_bdg, headers={'x-amz-request-payer':'requester'})
+            os.remove(out_bdg)
+            local['rm']('-f', bdg_paths)
+            yield 's3://{!s}/{!s}'.format(out_bucket, out_key)
+
+def _compiled_bdg_batches_to_bigwig(ctassay, bdg_batches_url_glob, out_bw_url, make_public=False, tmpdir='/mnt2'):
+    chrom_sizes_path = os.path.join(tmpdir, 'hg19.chrom.sizes')
+    while not os.path.exists(chrom_sizes_path):
+        try:
+            os.makedirs(chrom_sizes_path+'.lock')
+        except:
+            time.sleep(numpy.random.randint(10,20))
+        else:
+            #get chrom_sizes
+            s3_library.S3.get_bucket('encodeimputation-alldata').get_key('hg19.chrom.sizes').get_contents_to_filename(chrom_sizes_path, headers={'x-amz-request-payer':'requester'})
+            os.rmdir(chrom_sizes_path+'.lock')
+
+    ct_name, assay_name = ctassay
+    bdg_bucket, bdg_key = s3_library.parse_s3_url(bdg_batches_url_glob.format(ct_name, assay_name, 'imp'))
+    bdg_parts = sorted(s3_library.glob_keys(bdg_bucket, bdg_key), key=lambda x: x.name)
+    compiled_bdg = os.path.join(tmpdir, os.path.basename(bdg_parts[0].name).replace('.gz', ''))
+    with open(compiled_bdg, 'w') as out:
+        for bdg_part in bdg_parts:
+            with smart_open.smart_open(bdg_part) as lines_in:
+                for line in lines_in:
+                    out.write(line)
+
+    out_bw = os.path.splitext(compiled_bdg)[0] + '.bw'
+    bedGraphToBigWig = local['bedGraphToBigWig']
+    bedGraphToBigWig(compiled_bdg, chrom_sizes_path, out_bw)
+
+    out_bucket_txt, out_key_txt = s3_library.parse_s3_url(out_bw_url.format(ct_name, assay_name, 'imp'))
+    out_key = s3_library.S3.get_bucket(out_bucket_txt).new_key(out_key_txt)
+    out_key.set_contents_from_filename(out_bw, headers={'x-amz-request-payer':'requester'})
+    if make_public is True:
+        out_key.make_public()
+    os.remove(out_bw)
+    os.remove(compiled_bdg)
+    for bdg in bdg_parts:
+        bdg.delete()
+    assay_color = ASSAY_COLORS.get(assay_name, '80,80,80')
+    url = 'http://' + out_key.bucket.name + '.s3.amazonaws.com/' + urllib.quote(out_key.name)
+    return ('track type=bigWig maxHeightPixels=50 name={!s} visibility=full color={!s} bigDataUrl={!s}'.
+            format(os.path.basename(out_key.name), assay_color, url))
+
 def _combine_bdg_coords(bdg_coord_glob):
     bdg_coord_parts = sorted(glob.glob(bdg_coord_glob))
     bdg_coord_path = os.path.join(os.path.dirname(bdg_coord_glob), 'bdg_coords.txt')
@@ -2429,7 +2529,7 @@ def _combine_bdg_coords(bdg_coord_glob):
 
 def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean, 
                    ct_list, assay_list, out_bucket, out_root, winsize=25, 
-                   sinh=True, make_public=True, tmpdir='/data/tmp', coords=None, extra_id=None):
+                   sinh=True, make_public=True, tmpdir='/data/tmp', coords=None, extra_id=None, just_bdg=False):
     out_root = os.path.join(out_root, 'bigwigs')
     if extra_id is None:
         bdg_path = os.path.join(tmpdir, '{0!s}_{1!s}/{0!s}_{1!s}.{2!s}.txt')
@@ -2437,7 +2537,10 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
         bdg_path = os.path.join(tmpdir, '{{0!s}}_{{1!s}}/{{0s}}_{{1!s}}.{:05d}.{{2!s}}.txt'.format(extra_id))
     if coords is None:
         coords = list(zip(*itertools.product(numpy.arange(len(ct_list)), numpy.arange(len(assay_list)))))
-    sorted_w_idx = gtotal.sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords, tmpdir=tmpdir)).count()
+#for some reason this old line of code removes the gidx after sorting the rdd, but _construct_bdg_parts expects it
+#    sorted_w_idx = gtotal.sortByKey().map(lambda (x,y): y).mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords, tmpdir=tmpdir)).count()
+
+    sorted_w_idx = gtotal.sortByKey().mapPartitionsWithIndex(lambda x,y: _construct_bdg_parts(x, y, bdg_path, ct_list, assay_list, ct, ct_bias, assay, assay_bias, gmean, winsize=winsize, sinh=sinh, coords=coords, tmpdir=tmpdir)).count()
 
     bdg_coord_glob = os.path.join(tmpdir, 'bdg_coords.*.txt')
     sc.parallelize([bdg_coord_glob], numSlices=1).foreach(_combine_bdg_coords)
@@ -2445,15 +2548,27 @@ def write_bigwigs2(gtotal, ct, ct_bias, assay, assay_bias, gmean,
     if extra_id is not None:
         bdg_path = os.path.join(tmpdir, '{0!s}_{1!s}/{0!s}_{1!s}.*.{2!s}.txt')
     ct_assay_list = [(ct_list[c], assay_list[a]) for c, a in zip(*coords)]
-    track_lines = sc.parallelize(ct_assay_list, numSlices=len(ct_assay_list)/2).mapPartitions(lambda x: _compile_bdg_and_upload(x, out_bucket, out_root, bdg_path, tmpdir=tmpdir)).collect()
+    track_lines = sc.parallelize(ct_assay_list, numSlices=len(ct_assay_list)/2).mapPartitions(lambda x: _compile_bdg_and_upload(x, out_bucket, out_root, bdg_path, tmpdir=tmpdir, no_bw=just_bdg)).collect()
     out_url = 's3://{!s}/{!s}'.format(out_bucket, os.path.join(out_root, 'track_lines.txt'))
     with smart_open.smart_open(out_url, 'w') as out:
-        out.write('\n'.join(track_lines))    
+        out.write('\n'.join(track_lines))
+    sc.parallelize([os.path.join(tmpdir, 'bdg_coords.txt')], numSlices=1).foreach(os.remove)
     return
 
-def impute_and_avg(model_urls, coords='test'):
+def _remove_negs_csr(x):
+    '''Takes a scipy.sparse.csr_matrix and returns it with any negative values set to zero.
+    '''
+    neg_coords = numpy.where(x.data < 0)
+    if len(neg_coords[0]):
+        x.data[neg_coords] = 0
+        x.eliminate_zeros()
+    return x
+
+def impute_and_avg(model_urls, coords='test', remove_negs=True):
     models = []
     data_rdd = None
+    model_count = 0
+    agg_model = None
     for url in model_urls:
         (gmean, ct, ct_bias, assay, assay_bias, 
          genome_params, hyperparams, data) = load_model(url, load_data_too=True if data_rdd is None else False)
@@ -2463,10 +2578,61 @@ def impute_and_avg(model_urls, coords='test'):
         if coords in ['train', 'valid', 'test']:
             coords = numpy.where(~hyperparams['subsets'][SUBSET_MAP[coords]])
         imputed_rdd = compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=coords)
+        model_count += 1
         models.append(imputed_rdd)
+        if len(models) == 4:
+            num_parts = models[0].getNumPartitions()
+            imp_sum = sc.union(models).reduceByKey(lambda x,y: x + y, numPartitions=num_parts).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+            imp_sum.count()
+            if agg_model is not None:
+                agg_model.unpersist()
+                del(agg_model)
+            agg_model = imp_sum
+            models = [agg_model]
     num_parts = models[0].getNumPartitions()
-    model_count = float(len(models))
-    avg_imp = sc.union(models).reduceByKey(lambda x,y: x + y, numPartitions=num_parts).mapValues(lambda x: x/model_count)
+    if remove_negs is True:
+        avg_imp = sc.union(models).reduceByKey(lambda x,y: x + y, numPartitions=num_parts).mapValues(lambda x: x/model_count).mapValues(_remove_negs_csr)
+    else:
+        avg_imp = sc.union(models).reduceByKey(lambda x,y: x + y, numPartitions=num_parts).mapValues(lambda x: x/model_count)
+    if agg_model is not None:
+        avg_imp.persist()
+        avg_imp.count()
+        agg_model.unpersist()
+        del(agg_model)
+    return avg_imp
+
+def impute_and_sum(model_urls, coords='test'):
+    models = []
+    data_rdd = None
+    model_count = 0
+    agg_model = None
+    for url in model_urls:
+        (gmean, ct, ct_bias, assay, assay_bias, 
+         genome_params, hyperparams, data) = load_model(url, load_data_too=True if data_rdd is None else False)
+        if data_rdd is None:
+            data_rdd = data[0]
+        gtotal_rdd = genome_params.join(data_rdd).map(lambda (gidx, ((g, gb), d)): (gidx, d, g, gb))
+        if coords in ['train', 'valid', 'test']:
+            coords = numpy.where(~hyperparams['subsets'][SUBSET_MAP[coords]])
+        imputed_rdd = compute_imputed2(gtotal_rdd, ct, ct_bias, assay, assay_bias, gmean, coords=coords)
+        model_count += 1
+        models.append(imputed_rdd)
+#        if len(models) == 4:
+#            num_parts = models[0].getNumPartitions()
+#            imp_sum = sc.union(models).reduceByKey(lambda x,y: x + y, numPartitions=num_parts).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+#            imp_sum.count()
+#            if agg_model is not None:
+#                agg_model.unpersist()
+#                del(agg_model)
+#            agg_model = imp_sum
+#            models = [agg_model]
+    num_parts = models[0].getNumPartitions()
+    avg_imp = sc.union(models).reduceByKey(lambda x,y: x + y, numPartitions=num_parts).mapValues(lambda x: (x, coords))
+    if agg_model is not None:
+        avg_imp.persist()
+        avg_imp.count()
+        agg_model.unpersist()
+        del(agg_model)
     return avg_imp
 
 def debug(gtotal=None):

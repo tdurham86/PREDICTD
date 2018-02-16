@@ -29,10 +29,9 @@ def _make_gtotal_plus_noise(gtotal_elt, rseed, noise_spread=0.01, plus=True):
 
 def train_consolidated(args):
     #read in data
-    print(args.factor_init_seed)
     print('Read in data.')
     data, subsets = pl.load_data(args.data_url, win_per_slice=args.win_per_slice, fold_idx=args.fold_idx,
-                                 valid_fold_idx=args.valid_fold_idx, folds_fname=args.folds_fname, log_transform=args.log_transform)
+                                 valid_fold_idx=args.valid_fold_idx, folds_fname=args.folds_fname)
     data_idx_url = os.path.splitext(args.data_url)[0] + '.data_idx.pickle'
     data_idx = s3_library.get_pickle_s3(*s3_library.parse_s3_url(data_idx_url))
     if args.addl_data_url:
@@ -54,23 +53,28 @@ def train_consolidated(args):
     rs = numpy.random.RandomState(args.factor_init_seed)
     gmean = pl.calc_gmean(data, subset=subsets[pl.SUBSET_TRAIN])
     data2 = data.mapValues(lambda x: pl.subtract_from_csr(x, gmean)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
-    ct, ct_bias, assay, assay_bias, genome, genome_bias = pl.init_factors(data2, subsets[pl.SUBSET_TRAIN], args.latent_factors, init_seed=rs.randint(0,int(1e8)), uniform_bounds=(-0.33, 0.33))
+    ct, ct_bias, assay, assay_bias, genome, genome_bias = pl.init_factors(data2, subsets[pl.SUBSET_TRAIN], args.latent_factors, init_seed=rs.randint(0, int(1e8)), uniform_bounds=(-0.33, 0.33))
 #    gtotal_all = data2.join(genome.join(genome_bias)).map(lambda (idx, (d, (g, gb))): (idx, d, g, gb, None)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
-    gtotal_all = data2.join(genome.join(genome_bias)).map(lambda (idx, (d, (g, gb))): (idx, (d, g, gb, None))).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+    gtotal_all = data2.join(genome.join(genome_bias)).map(lambda (idx, (d, (g, gb))): (idx, (d, g, gb, None))).zipWithIndex().map(lambda ((gidx, (d, g, gb, s)), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     num_all = gtotal_all.count()
-    data.unpersist()
-    del(data)
+    data2.unpersist()
+    del(data2)
     genome.unpersist()
     del(genome)
     genome_bias.unpersist()
     del(genome_bias)
 
 #    gtotal_init = gtotal_all.sample(False, args.training_fraction, args.training_fraction_seed).repartition(20).zipWithIndex().map(lambda ((gidx, d, g, gb, s), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
-    training_fraction_seed = rs.randint(0, int(1e8))
+    if args.training_fraction_seed is not None:
+        training_fraction_rs = numpy.random.RandomState(args.training_fraction_seed)
+    else:
+        training_fraction_rs = rs
+    training_fraction_seed = training_fraction_rs.randint(0, int(1e8))
     num_to_select = num_all * args.training_fraction
     num_slices = max(int(numpy.floor(num_to_select/args.win_per_slice)), 20)
     if args.calc_valid_on_diff_loci is True:
-        gtotal_select = gtotal_all.sample(False, min(args.training_fraction * 2, 1.0), training_fraction_seed).repartitionAndSortWithinPartitions(numPartitions=20).zipWithIndex().map(lambda ((gidx, (d, g, gb, s)), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+#        gtotal_select = gtotal_all.sample(False, min(args.training_fraction * 2, 1.0), training_fraction_seed).repartitionAndSortWithinPartitions(numPartitions=20).zipWithIndex().map(lambda ((gidx, (d, g, gb, s)), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_select = gtotal_all.sample(False, min(args.training_fraction * 2, 1.0), training_fraction_seed).repartitionAndSortWithinPartitions(numPartitions=20).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         gtotal_init_size = int(gtotal_select.count()/2)
         gtotal_init = gtotal_select.zipWithIndex().filter(lambda x: x[1] < gtotal_init_size).map(lambda x:x[0]).repartitionAndSortWithinPartitions(numPartitions=num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         gtotal_init.count()
@@ -79,28 +83,28 @@ def train_consolidated(args):
         gtotal_select.unpersist()
         del(gtotal_select)
     else:
-        gtotal_init = gtotal_all.sample(False, min(args.training_fraction, 1.0), training_fraction_seed).repartitionAndSortWithinPartitions(numPartitions=num_slices).zipWithIndex().map(lambda ((gidx, (d, g, gb, s)), zidx): _make_gtotal_plus_noise((gidx, d, g, gb), zidx, noise_spread=1, plus=False)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+        gtotal_init = gtotal_all.sample(False, min(args.training_fraction, 1.0), training_fraction_seed).repartitionAndSortWithinPartitions(numPartitions=num_slices).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
         gtotal_valid = None
 
     #train factors with parallel SGD 
     print('Train PREDICTD')
-    iseed = rs.randint(0, int(1e8))
+    iseed = training_fraction_rs.randint(0, int(1e8))
     gtotal, ct, ct_bias, assay, assay_bias, iter_errs = pl.train_predictd(gtotal_init, ct, rc, ct_bias, rbc, assay, ra, assay_bias, rba, ri, rbi, learning_rate, args.run_bucket, args.out_root, args.iters_per_mse, args.batch_size, args.stop_winsize, args.stop_winspacing, args.stop_win2shift, args.stop_pval, args.lrate_search_num, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, init_seed=iseed, restart=args.restart, checkpoint=args.checkpoint, min_iters=args.min_iters, max_iters=args.max_iters, subsets=subsets, burn_in_epochs=args.burn_in_epochs, gtotal_valid=gtotal_valid, ri2=args.ri2)
-    gtotal_out_url = 's3://{!s}/{!s}'.format(args.run_bucket, os.path.join(args.out_root, 'trained_gtotal.rd.pickle'))
+    gtotal_out_url = 's3://{!s}/{!s}'.format(args.run_bucket, os.path.join(args.out_root, 'trained_gtotal.rdd.pickle'))
     pl.save_rdd_as_pickle(gtotal, gtotal_out_url)
 
     #train genome factors across whole genome
     print('Apply new cell type parameters across genome.')
     genome_subset = pl.train_genome_dimension(gtotal, ct, ct_bias, 
                                               assay, assay_bias, args.ri2, subsets=subsets)
-#    gtotal_tmp = gtotal.mapPartitionsWithIndex(lambda x,y: sgd_genome_only(x, y,  ct, ct_bias, assay, assay_bias, ri, rbi, learning_rate, args.batch_size, len(iter_errs) + 1, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, auto_convergence_detection=True, subsets=subsets)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+#    genome_subset = gtotal.mapPartitionsWithIndex(lambda x,y: pl.sgd_genome_only(x, y,  ct, ct_bias, assay, assay_bias, ri, rbi, learning_rate, args.batch_size, len(iter_errs) + 1, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, auto_convergence_detection=True, subsets=subsets)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     final_gtotal_mse = pl.calc_mse(genome_subset, ct, rc, ct_bias, rbc, assay, ra, 
                                    assay_bias, rba, ri, rbi, subsets=subsets)
     iter_errs.append(final_gtotal_mse)
 
     genome_total = pl.train_genome_dimension(gtotal_all, ct, ct_bias,
                                              assay, assay_bias, args.ri2, subsets=subsets)
-#    gtotal_tmp = gtotal_all.mapPartitionsWithIndex(lambda x,y: sgd_genome_only(x, y,  ct, ct_bias, assay, assay_bias, ri, rbi, learning_rate, args.batch_size, len(iter_errs) + 1, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, auto_convergence_detection=True, subsets=subsets)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
+#    genome_total = gtotal_all.mapPartitionsWithIndex(lambda x,y: pl.sgd_genome_only(x, y,  ct, ct_bias, assay, assay_bias, ri, rbi, learning_rate, args.batch_size, len(iter_errs) + 1, beta1=args.beta1, beta2=args.beta2, epsilon=args.epsilon, auto_convergence_detection=True, subsets=subsets)).persist(storageLevel=StorageLevel.MEMORY_AND_DISK_SER)
     final_mse = pl.calc_mse(genome_total, ct, rc, ct_bias, rbc, assay, ra,
                             assay_bias, rba, ri, rbi, subsets=subsets)
     iter_errs.append(final_mse)
@@ -128,6 +132,15 @@ def train_consolidated(args):
     checkpoints_url = 's3://{!s}/{!s}'.format(args.run_bucket, os.path.join(args.out_root, 'checkpoints/'))
     cmd = ['aws', 's3', 'rm', checkpoints_url, '--recursive']
     subprocess.check_call(cmd)
+
+    #Save the final MSE broken down by experiment
+    exp_coords = numpy.where(numpy.logical_or(numpy.logical_or(~subsets[pl.SUBSET_VALID], ~subsets[pl.SUBSET_TEST]), ~subsets[pl.SUBSET_TRAIN]))
+    imputed = pl.compute_imputed2(genome_total, ct, ct_bias, assay, assay_bias, gmean,
+                                  coords=exp_coords)
+    sse = imputed.join(data).map(lambda (gidx, (i,d)): (sps.csr_matrix((numpy.square(i.toarray()[exp_coords] - d.toarray()[exp_coords]), exp_coords), shape=i.shape), 1)).reduce(lambda (mat1, count1), (mat2, count2): (mat1 + mat2, count1 + count2))
+    mse = sse[0]
+    mse.data /= sse[1]
+    s3_library.set_pickle_s3(args.run_bucket, os.path.join(args.out_root, 'mse_per_experiment.pickle'), mse)
 
     #make browser view of H1 cell line tracks
     if args.no_browser_tracks is False:
@@ -201,10 +214,9 @@ parser.add_argument('--folds_fname', help='Basename for the file containing the 
 #parser.add_argument('--final_genome_training_on_all_loci', action='store_true', default=False)
 parser.add_argument('--no_bw_sinh', default=False, action='store_true', help='If generating bigwig files after model training, do not reverse the inverse hyperbolic sine on these files and simply output the raw imputed values.')
 parser.add_argument('--training_fraction', type=float, default=0.01, help='The fraction of genomic positions in the RDD tensor to use for model training. Smaller values will result in fewer slices of the tensor to train at each parallel SGD iteration, and will speed up model training as long as the number of slices exceeds the number of available cores. [default: %(default)s]')
-#parser.add_argument('--training_fraction_seed', type=int, default=55)
+parser.add_argument('--training_fraction_seed', type=int, help='Sometimes one wants to have different model initializations but train on the same genomic positions. Setting this seed will ensure reproducible genomic windows in the training set. If this option is not specified, then this seed will be set by drawing a random integer from the same numpy.random.RandomState object that was initialized based on the --factor_init_seed option.')
 parser.add_argument('--no_browser_tracks', action='store_true', default=False, help='If set, do not output any tracks of imputed data after training. Useful if one is training multiple models with the goal of averaging their results or if one is only interested in whole genome imputed tracks and plans to run the impute_data.py script after model training.')
 parser.add_argument('--calc_valid_on_diff_loci', action='store_true', default=False, help='If set, then during the parallel stochastic gradient descent iterations the validation and test set mean squared error will be calculated on a different set of genomic loci than the ones used for training the model.')
-parser.add_argument('--log_transform', action='store_true', default=False, help='Transform the input data with the natural log instead of the inverse hyperbolic sine before model training.')
 
 if __name__ == "__main__":
     args = parser.parse_args()

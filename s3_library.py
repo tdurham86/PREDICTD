@@ -13,7 +13,8 @@ from tempfile import NamedTemporaryFile
 #    cred_info = dict([elt.strip().split('=') for elt in creds])
 ##print(cred_info)
 #S3 = boto.connect_s3(**cred_info)
-S3 = boto.connect_s3()
+S3 = boto.s3.connect_to_region('us-west-2')
+
 TMPDIR='/data/tmp'
 try:
     if not os.path.isdir(TMPDIR):
@@ -59,6 +60,7 @@ def set_pickle_s3(bucketname, keyname, obj):
     key = bucket.get_key(keyname)
     if key is None:
         key = bucket.new_key(keyname)
+#    key.set_contents_from_string(pickle.dumps(obj), headers={'x-amz-request-payer':'requester'})
     with NamedTemporaryFile(dir=TMPDIR) as tmp:
         pickle.dump(obj, tmp)
         tmp.seek(0)
